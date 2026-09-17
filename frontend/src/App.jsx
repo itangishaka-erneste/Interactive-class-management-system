@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import Home from "./home.jsx";
 import Register from "./register.jsx";
@@ -58,3 +59,14 @@ export default function App() {
     </BrowserRouter>
   );
 }
+=======
+function App() {
+  return (
+    <h1 className="text-4xl font-bold text-blue-600">
+      Tailwind CSS is working!
+    </h1>
+  )
+}
+
+export default App
+>>>>>>> de99b77bba643e0e673013e71611e3a4aa3a47c1
