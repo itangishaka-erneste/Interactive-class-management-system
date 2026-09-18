@@ -24,10 +24,8 @@ import {
 
 const BRAND_NAME = "Easy Class Records System";
 
-// TODO: replace with your own Google OAuth Client ID from
+// Replace with your own Google OAuth Client ID from
 // https://console.cloud.google.com/apis/credentials
-// Then add your dev URL (e.g. http://localhost:5173) and your production
-// URL as "Authorized JavaScript origins" on that client.
 const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
 
 const INITIAL_FORM = {
@@ -206,7 +204,7 @@ function GlobalKeyframes() {
 }
 
 /* ============================================================================
-   TOP BAR — brand mark is now an icon, so there's no image file to break.
+   TOP BAR
    ============================================================================ */
 
 function TopBar({ onBackHome, onLogin, lang, setLang }) {
@@ -261,7 +259,7 @@ function TopBar({ onBackHome, onLogin, lang, setLang }) {
 }
 
 /* ============================================================================
-   GOOGLE SIGN-IN (client-side only — verifies the email is real)
+   GOOGLE SIGN-IN (client-side email verification)
    ============================================================================ */
 
 function useGoogleIdentity(onVerified) {
@@ -311,7 +309,6 @@ function useGoogleIdentity(onVerified) {
       shape: "pill",
       width: 260,
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
   return { ready, error, buttonRef };
@@ -326,7 +323,7 @@ function GoogleEmailField({ form, setForm }) {
       email,
       emailName: name,
       emailPicture: picture,
-      emailVerified: verified !== false, // Google sets this false only in edge cases
+      emailVerified: verified !== false,
     }));
   };
 
@@ -334,7 +331,6 @@ function GoogleEmailField({ form, setForm }) {
 
   const reset = () => {
     setForm((f) => ({ ...f, email: "", emailVerified: false, emailName: "", emailPicture: "" }));
-    // Let the user pick a different Google account next time.
     window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
@@ -386,7 +382,7 @@ function GoogleEmailField({ form, setForm }) {
 }
 
 /* ============================================================================
-   REGISTRATION FORM — frontend-only
+   REGISTRATION FORM
    ============================================================================ */
 
 function RegistrationFormBody({ onLogin }) {
@@ -406,7 +402,6 @@ function RegistrationFormBody({ onLogin }) {
   const isValid = nameDone && phoneDone && logoDone && form.emailVerified;
   const showValidationError = submitted && !isValid;
 
-  // No backend — registration is created entirely on the client.
   function handleSubmit(e) {
     e.preventDefault();
     setSubmitted(true);
