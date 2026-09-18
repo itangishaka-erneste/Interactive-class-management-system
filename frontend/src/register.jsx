@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from "react";
+import esms from './assets/esms.jpg';
 import {
   ArrowLeft,
   LogIn,
@@ -22,7 +23,7 @@ import {
    still 100% client-side, no backend of ours involved.
    ============================================================================ */
 
-const BRAND_NAME = "Easy Class Records System";
+const BRAND_NAME = "ESMS";
 
 // Replace with your own Google OAuth Client ID from
 // https://console.cloud.google.com/apis/credentials
@@ -87,13 +88,11 @@ const T_EN = {
   backHome: "Back to home",
   login: "Log in",
   langSwitch: "Kinyarwanda",
-  formEyebrow: "INSTITUTION REGISTRATION",
-  formTitle: "Register your institution",
   formDesc: "Just the essentials — school name, logo, phone number, and a verified email.",
   institutionSection: "Institution details",
-  namePh: "Institution name",
+  namePh: "School name",
   phonePh: "07XX XXX XXX",
-  phoneInvalid: "Enter a valid Rwandan number — 10 digits, starting with 07",
+  phoneInvalid: "Enter a valid Rwandan number — 10 digits, starting with 078/079/073/072",
   phoneValid: "Valid Rwandan number",
   logoLabel: "School logo",
   logoUploadTab: "Upload",
@@ -123,8 +122,7 @@ const T_RW = {
   backHome: "Garuka ahabanza",
   login: "Injira",
   langSwitch: "English",
-  formEyebrow: "KWIYANDIKISHA KW'IKIGO",
-  formTitle: "Andikisha ikigo cyawe",
+
   formDesc: "Ibisabwa gusa — izina ry'ikigo, ikirango, telefoni, na email yemejwe.",
   institutionSection: "Amakuru y'ikigo",
   namePh: "Izina ry'ikigo",
@@ -225,7 +223,7 @@ function TopBar({ onBackHome, onLogin, lang, setLang }) {
           className="w-9 h-9 rounded-lg flex items-center justify-center ring-1 ring-slate-200"
           style={{ background: INK }}
         >
-          <School size={18} color="white" strokeWidth={2.25} />
+          <img src={esms} alt="ESMS logo" className="w-full   h-full" />
         </span>
         <span className="text-[13px] font-extrabold tracking-tight" style={{ color: INK, fontFamily: "'Poppins', sans-serif" }}>
           {BRAND_NAME}

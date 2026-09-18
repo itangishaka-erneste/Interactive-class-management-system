@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import esms from './assets/esms.jpg';
+import trends from './assets/trends.jpg';
 import {
   BookOpen,
   ClipboardCheck,
@@ -1282,7 +1284,7 @@ export default function EasyClassWork() {
         <div className="max-w-6xl mx-auto px-5 sm:px-8 h-20 flex items-center justify-between">
           <a href="#home" className="flex items-center gap-2.5 shrink-0">
             <span className="w-12 h-12 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20 shrink-0">
-              <School className="w-6 h-6 text-[#178754]" aria-hidden="true" />
+              <img src={esms} alt="ESMS logo" className="w-full h-full rounded-full" />
             </span>
             <span className="ecw-heading font-bold text-[15px] text-neutral-900 leading-none">
               ESMS
@@ -1381,8 +1383,8 @@ export default function EasyClassWork() {
 
               <div className="ecw-ad-panel relative">
                 <div className="ecw-ad-circles">
-                  <div className="ecw-ad-circle">
-                    <ActiveAdIcon className="w-10 h-10 text-[#178754]" aria-hidden="true" />
+                  <div className="ecw-ad-circle rounded-full w-full h-full overflow-hidden">
+                    <img src={trends} alt="ESMS logo" className="w-full rounded-full h-full" />
                   </div>
                 </div>
                 <a href="#services" className="ecw-ad-button absolute right-0 bottom-6 translate-x-1/2 shadow-lg transition-transform hover:-translate-y-0.5 hover:shadow-xl">
