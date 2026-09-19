@@ -27,26 +27,36 @@ import {
 } from "lucide-react";
 
 /* ============================================================================
-   FRONTEND-ONLY "DATABASE" — localStorage
-   There is no server anywhere in this file. Schools, user accounts,
-   teacher assignments and the school-admin confirmation code all live in the
-   browser's localStorage. It still behaves like a real multi-role flow
-   (register -> pending -> approved -> sign in) — it's just persisted locally
-   instead of on a backend. This is a single, self-contained page: nothing
-   here is imported from any other file in the project.
+   CONFIG
+   Add these to your frontend .env:
+
+     VITE_GOOGLE_CLIENT_ID=your-real-client-id.apps.googleusercontent.com
+     VITE_API_BASE=http://localhost:5000
+
+   HOW SIGN-IN WORKS NOW
+   - Every "Continue with Google" button is the real Google Identity Services
+     button.
+   - School admin and super admin: the Google token is sent to the server, which
+     verifies it with Google and decides who gets in. No school code and no
+     confirmation code are needed any more.
+       * School admin -> must be the Google email the school registered with,
+         and the school must be approved by the super admin.
+       * Super admin  -> must be the single email set as SUPERADMIN_EMAIL on
+         the server.
+   - Students and teachers still keep their accounts in this browser's
+     localStorage (there is no student/teacher backend yet), but the school
+     list comes from the server (approved schools only) and the school code is
+     checked by the server.
    ============================================================================ */
 
-const DB_SCHOOLS_KEY = "ecw_db_schools";
-const DB_USERS_KEY = "ecw_db_users";
+const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "";
+const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:5000";
 
-// A handful of already-"approved" schools so the dropdown isn't empty on
-// first load. Feel free to add more, or wire up a real admin panel later
-// that writes into DB_SCHOOLS_KEY.
-const SEED_SCHOOLS = [
-  { id: "sch_1", name: "Green Hills Academy", code: "1234" },
-  { id: "sch_2", name: "Lycee de Kigali", code: "5678" },
-  { id: "sch_3", name: "GS Nyamirambo", code: "4321" },
-];
+/* ============================================================================
+   LOCAL STORAGE (student / teacher accounts only)
+   ============================================================================ */
+
+const DB_USERS_KEY = "ecw_db_users";
 
 // Classes available for a teacher to pick from. In a real system this would
 // be created by each school; here it's shared across all schools for demo
@@ -70,14 +80,6 @@ function readDb(key, fallback) {
 function writeDb(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
 }
-function getSchools() {
-  let schools = readDb(DB_SCHOOLS_KEY, null);
-  if (!schools) {
-    schools = SEED_SCHOOLS;
-    writeDb(DB_SCHOOLS_KEY, schools);
-  }
-  return schools;
-}
 function getUsers() {
   return readDb(DB_USERS_KEY, []);
 }
@@ -87,24 +89,12 @@ function saveUsers(users) {
 function randomId(prefix) {
   return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
 }
-function randomCode() {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
 
 // localStorage keys the various session tokens are kept under, so a page
 // refresh on any dashboard doesn't lose the sign-in.
 const ADMIN_SESSION_KEY = "ecw_admin_session";
 const SUPERADMIN_SESSION_KEY = "ecw_superadmin_session";
 const USER_SESSION_KEY = "ecw_user_session";
-
-// ------------------------------------------------------------------
-// SUPER ADMIN — Google-gated sign-in, entirely client-side.
-// There is no password anywhere for this role. The person signs in with
-// Google, and we simply check that account's email against this allowlist.
-// Only an exact match is let through; everyone else is rejected instantly,
-// with no request going anywhere.
-// ------------------------------------------------------------------
-const AUTHORIZED_SUPERADMIN_EMAIL = "honorgenius001@gmail.com";
 
 // Steps shown in the "connecting" loading overlay.
 const LOADING_STEPS = [
@@ -113,8 +103,8 @@ const LOADING_STEPS = [
   "Almost there",
 ];
 
-// Placeholder school code shown in input hints before schools are picked.
-const DEFAULT_SCHOOL_CODE = "1234";
+// Placeholder shown in the school code input hints.
+const DEFAULT_SCHOOL_CODE = "ECR-123456";
 
 // Icons cycled through in the featured partners ad carousel.
 const AD_CIRCLE_ICONS = [Star, Trophy, Handshake];
@@ -128,56 +118,133 @@ const SUBJECT_OPTIONS = [
   "Literature in English", "Kiswahili",
 ];
 
-// Every sign-in role the system supports.
-//   - student / teacher -> Google sign-in only, no password ever collected.
-//     Registering creates a locally-stored account marked "pending"; it's
-//     auto-approved a couple of seconds later (there's no admin panel to
-//     click approve in this demo), then the person can sign back in.
-//   - schoolAdmin -> email + school code, then a confirmation code that (in
-//     the absence of a mail server) is shown right inside the modal.
-//   - superAdmin -> Google sign-in only, gated by AUTHORIZED_SUPERADMIN_EMAIL.
+// Every sign-in role the system supports. All of them use Google.
+//   - student / teacher -> register with a school code, then sign in with Google.
+//   - schoolAdmin -> Google only. The school itself is registered on /register.
+//   - superAdmin  -> Google only, allowed only for the server's SUPERADMIN_EMAIL.
 const ROLE_CONFIG = {
   student: { label: "Student", icon: BookOpen, canRegister: true, authField: "google" },
   teacher: { label: "Teacher", icon: GraduationCap, canRegister: true, authField: "google" },
-  schoolAdmin: { label: "School admin", icon: Wallet, canRegister: false, authField: "schoolCode" },
+  schoolAdmin: { label: "School admin", icon: Wallet, canRegister: false, authField: "google" },
   superAdmin: { label: "Super admin", icon: ShieldCheck, canRegister: false, authField: "google" },
 };
 
-// ------------------------------------------------------------------
-// Mock "Google" sign-in button — inlined so this page has zero imports
-// beyond npm packages (react-router-dom, lucide-react). There is no real
-// OAuth call here; it just asks for a name and email and hands them back,
-// so the rest of the demo flow (register -> pending -> approve -> sign in)
-// still works without any backend or external file.
-// ------------------------------------------------------------------
-function GoogleAuthButton({ onSignedIn, label = "Continue with Google" }) {
-  const handleClick = () => {
-    const name = window.prompt("Demo Google sign-in — enter your name:");
-    if (!name || !name.trim()) return;
-    const email = window.prompt("Demo Google sign-in — enter your email:");
-    if (!email || !email.trim()) return;
-    onSignedIn({
-      name: name.trim(),
-      email: email.trim(),
-      googleSub: randomId("gsub"),
+const isAdminRole = (role) => role === "schoolAdmin" || role === "superAdmin";
+
+/* ============================================================================
+   REAL GOOGLE SIGN-IN (Google Identity Services)
+   ============================================================================ */
+
+function decodeGoogleJwt(token) {
+  const base64Url = token.split(".")[1];
+  const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+  const jsonPayload = decodeURIComponent(
+    atob(base64)
+      .split("")
+      .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+      .join("")
+  );
+  return JSON.parse(jsonPayload);
+}
+
+let gsiScriptPromise = null;
+let gsiInitialized = false;
+let gsiHandler = null;
+
+function loadGoogleScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (!gsiScriptPromise) {
+    gsiScriptPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.onload = resolve;
+      script.onerror = () => { gsiScriptPromise = null; reject(new Error("Google script failed to load")); };
+      document.body.appendChild(script);
     });
-  };
+  }
+  return gsiScriptPromise;
+}
+
+// The real "Continue with Google" button. `onSignedIn` receives
+// { name, email, picture, credential } where `credential` is the Google ID token
+// the server re-verifies.
+function GoogleAuthButton({ onSignedIn, text = "continue_with" }) {
+  const containerRef = useRef(null);
+  const handlerRef = useRef(onSignedIn);
+  handlerRef.current = onSignedIn;
+  const [status, setStatus] = useState(GOOGLE_CLIENT_ID ? "loading" : "missing");
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return undefined;
+    let cancelled = false;
+
+    loadGoogleScript()
+      .then(() => {
+        if (cancelled || !containerRef.current) return;
+
+        gsiHandler = (response) => {
+          try {
+            const payload = decodeGoogleJwt(response.credential);
+            if (payload?.email) {
+              handlerRef.current({
+                name: payload.name || "",
+                email: payload.email,
+                picture: payload.picture || "",
+                googleSub: payload.sub,
+                credential: response.credential,
+              });
+            }
+          } catch {
+            setStatus("error");
+          }
+        };
+
+        if (!gsiInitialized) {
+          window.google.accounts.id.initialize({
+            client_id: GOOGLE_CLIENT_ID,
+            callback: (response) => gsiHandler?.(response),
+          });
+          gsiInitialized = true;
+        }
+
+        window.google.accounts.id.renderButton(containerRef.current, {
+          theme: "outline",
+          size: "large",
+          shape: "pill",
+          text,
+          width: 280,
+        });
+        setStatus("ready");
+      })
+      .catch(() => { if (!cancelled) setStatus("error"); });
+
+    return () => { cancelled = true; };
+  }, []);
 
   return (
-    <button
-      type="button"
-      onClick={handleClick}
-      className="w-full flex items-center justify-center gap-2 text-xs font-bold text-neutral-700 border border-neutral-200 rounded-lg py-2.5 hover:bg-neutral-50 transition-colors"
-    >
-      <Mail size={16} className="text-[#178754]" aria-hidden="true" />
-      {label}
-    </button>
+    <div>
+      <div ref={containerRef} className="flex justify-center min-h-[44px]" />
+      {status === "loading" && (
+        <p className="text-[11px] text-neutral-400 text-center">Loading Google sign-in…</p>
+      )}
+      {status === "missing" && (
+        <p className="text-[11px] font-semibold text-red-600 text-center">
+          Google sign-in isn't configured. Set VITE_GOOGLE_CLIENT_ID in your .env file.
+        </p>
+      )}
+      {status === "error" && (
+        <p className="text-[11px] font-semibold text-red-600 text-center">
+          Couldn't load Google sign-in. Check your connection and try again.
+        </p>
+      )}
+    </div>
   );
 }
 
-// Dropdown for picking a school. Renders as a checkbox list (single-select)
-// with a "Verified" badge — every school in local storage is treated as
-// pre-approved, since there's no separate super-admin review step here.
+// Dropdown for picking a school. Only schools the super admin has approved are
+// listed (they come from the server).
 function SchoolDropdown({ value, onChange, error, schools, loading }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -211,7 +278,7 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
         <div className="absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
           {schools.length === 0 && !loading && (
             <p className="px-3 py-3 text-[11px] text-neutral-400">
-              No schools yet. Register a school first from the "Get started" button above.
+              No approved schools yet. Your school must be registered and approved first.
             </p>
           )}
           {schools.map((school) => {
@@ -248,9 +315,13 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
 function GoogleAccountChip({ account, onSwitch }) {
   return (
     <div className="flex items-center gap-2.5 rounded-lg border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
-      <span className="w-8 h-8 rounded-full bg-white flex items-center justify-center shrink-0 ring-1 ring-[#178754]/20">
-        <Mail size={14} className="text-[#178754]" />
-      </span>
+      {account.picture ? (
+        <img src={account.picture} alt="" referrerPolicy="no-referrer" className="w-8 h-8 rounded-full shrink-0 ring-1 ring-[#178754]/20" />
+      ) : (
+        <span className="w-8 h-8 rounded-full bg-white flex items-center justify-center shrink-0 ring-1 ring-[#178754]/20">
+          <Mail size={14} className="text-[#178754]" />
+        </span>
+      )}
       <div className="min-w-0 flex-1">
         <p className="text-[11px] font-bold text-neutral-800 truncate">{account.name}</p>
         <p className="text-[10px] text-neutral-500 truncate">{account.email}</p>
@@ -265,8 +336,8 @@ function GoogleAccountChip({ account, onSwitch }) {
 // Shared modal for login + registration, used by the student, teacher,
 // school-admin and super-admin flows.
 function AuthModal({
-  role, mode, onClose, onSwitchMode,
-  registerForm, setRegisterForm, loginForm, setLoginForm,
+  role, mode, onClose, onSwitchMode, onRegisterSchool,
+  registerForm, setRegisterForm,
   formError, authSubmitting, onSubmitRegister, onSubmitLogin,
   googleAccount, onGoogleSignedIn, onGoogleSwitch, schools, schoolsLoading,
 }) {
@@ -274,7 +345,15 @@ function AuthModal({
   const RoleIcon = config.icon;
   const roleLabel = config.label;
   const canRegister = config.canRegister;
-  const usesGoogle = config.authField === "google";
+  // Admins are signed in as soon as Google confirms the account.
+  const autoSignIn = isAdminRole(role);
+
+  const loginHint =
+    role === "superAdmin"
+      ? "Sign in with the Google account authorized for platform administration."
+      : role === "schoolAdmin"
+        ? "Sign in with the Google account you registered your school with. Your school must be approved first — we email your school code as soon as it is."
+        : "Sign in with the Google account you registered with. We only ever use it to confirm your email — no password to remember.";
 
   return (
     <div
@@ -306,20 +385,20 @@ function AuthModal({
           )}
 
           {mode === "login" ? (
-            usesGoogle ? (
-              <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
-                <p className="text-[11px] text-neutral-500 -mt-1">
-                  {role === "superAdmin"
-                    ? "Sign in with the Google account authorized for platform administration."
-                    : "Sign in with the Google account you registered with. We only ever use it to confirm your email — no password to remember."}
-                </p>
+            <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
+              <p className="text-[11px] text-neutral-500 -mt-1">{loginHint}</p>
 
-                {googleAccount ? (
-                  <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
-                ) : (
-                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} />
-                )}
+              {googleAccount ? (
+                <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
+              ) : (
+                <GoogleAuthButton onSignedIn={onGoogleSignedIn} />
+              )}
 
+              {autoSignIn ? (
+                authSubmitting && (
+                  <p className="text-center text-[11px] font-semibold text-[#178754]">Signing you in…</p>
+                )
+              ) : (
                 <button
                   type="submit"
                   disabled={!googleAccount || authSubmitting}
@@ -327,56 +406,26 @@ function AuthModal({
                 >
                   {authSubmitting ? "Signing in…" : "Continue to dashboard"}
                 </button>
+              )}
 
-                {canRegister && (
-                  <p className="text-center text-[11px] text-neutral-500 mt-1">
-                    Don't have an account?{" "}
-                    <button type="button" onClick={() => onSwitchMode("register")} className="font-bold text-[#178754] hover:underline">
-                      Register as {roleLabel.toLowerCase()}
-                    </button>
-                  </p>
-                )}
-              </form>
-            ) : (
-              <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
-                <div>
-                  <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Email address</label>
-                  <input
-                    type="email" required value={loginForm.email}
-                    onChange={(e) => setLoginForm((f) => ({ ...f, email: e.target.value }))}
-                    placeholder="you@example.com"
-                    className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                  />
-                </div>
-                <div>
-                  <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School code</label>
-                  <input
-                    type="text" required value={loginForm.schoolCode}
-                    onChange={(e) => setLoginForm((f) => ({ ...f, schoolCode: e.target.value }))}
-                    placeholder={`Code issued to your school (e.g. ${DEFAULT_SCHOOL_CODE})`}
-                    className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                  />
-                  <p className="text-[10px] text-neutral-400 mt-1">
-                    No password needed. After you continue, we'll generate a confirmation code for
-                    this sign-in — you'll enter it next to finish.
-                  </p>
-                </div>
-                <button
-                  type="submit" disabled={authSubmitting}
-                  className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-70 disabled:cursor-wait"
-                >
-                  {authSubmitting ? "Generating confirmation code…" : "Continue"}
-                </button>
-                {canRegister && (
-                  <p className="text-center text-[11px] text-neutral-500 mt-1">
-                    Don't have an account?{" "}
-                    <button type="button" onClick={() => onSwitchMode("register")} className="font-bold text-[#178754] hover:underline">
-                      Register as {roleLabel.toLowerCase()}
-                    </button>
-                  </p>
-                )}
-              </form>
-            )
+              {canRegister && (
+                <p className="text-center text-[11px] text-neutral-500 mt-1">
+                  Don't have an account?{" "}
+                  <button type="button" onClick={() => onSwitchMode("register")} className="font-bold text-[#178754] hover:underline">
+                    Register as {roleLabel.toLowerCase()}
+                  </button>
+                </p>
+              )}
+
+              {role === "schoolAdmin" && (
+                <p className="text-center text-[11px] text-neutral-500 mt-1">
+                  New school?{" "}
+                  <button type="button" onClick={onRegisterSchool} className="font-bold text-[#178754] hover:underline">
+                    Register your school
+                  </button>
+                </p>
+              )}
+            </form>
           ) : (
             <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
               <div>
@@ -384,7 +433,7 @@ function AuthModal({
                 {googleAccount ? (
                   <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
                 ) : (
-                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} label="Sign up with Google" />
+                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} text="signup_with" />
                 )}
                 <p className="text-[10px] text-neutral-400 mt-1">
                   We only take your name and email from Google — nothing else, and no password is stored.
@@ -420,7 +469,7 @@ function AuthModal({
                 type="submit" disabled={!googleAccount || authSubmitting}
                 className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {authSubmitting ? "Submitting…" : "Submit for school approval"}
+                {authSubmitting ? "Checking code…" : "Submit for school approval"}
               </button>
               <p className="text-center text-[11px] text-neutral-500 mt-1">
                 Already have an account?{" "}
@@ -459,77 +508,6 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
         >
           Got it
         </button>
-      </div>
-    </div>
-  );
-}
-
-// Second-factor modal for school admins. Since there's no email server in
-// this frontend-only build, the generated code is shown right in the modal
-// (clearly marked as a demo notice) instead of being emailed.
-function AdminOtpModal({ email, generatedCode, otpValue, setOtpValue, verifying, sending, error, onSubmit, onResend, onClose }) {
-  return (
-    <div
-      className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
-      role="dialog" aria-modal="true"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="ecw-body bg-white w-full max-w-sm rounded-2xl shadow-2xl">
-        <div className="flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
-          <span className="w-11 h-11 shrink-0 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20">
-            <ShieldCheck className="w-5 h-5 text-[#178754]" aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-green-700">School admin login</p>
-            <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mt-0.5">Enter confirmation code</h3>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
-          </button>
-        </div>
-
-        <div className="px-5 sm:px-6 py-5">
-          <p className="text-xs text-neutral-500 mb-2">
-            A confirmation code was generated for <span className="font-semibold text-neutral-800 break-all">{email}</span>.
-          </p>
-
-          {/* Demo notice — there's no mail server in this build, so the code is shown here. */}
-          <div className="mb-4 rounded-lg border border-dashed px-3 py-2.5 text-center" style={{ borderColor: "#FF4500" }}>
-            <p className="text-[10px] font-bold uppercase tracking-wide" style={{ color: "#FF4500" }}>Demo mode — no email sent</p>
-            <p className="text-lg font-extrabold tracking-[0.3em] mt-1" style={{ color: "rgb(22,32,111)" }}>{generatedCode}</p>
-          </div>
-
-          {error && (
-            <div className="mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={onSubmit} className="flex flex-col gap-3">
-            <div>
-              <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Confirmation code</label>
-              <input
-                type="text" inputMode="numeric" maxLength={6} required autoFocus
-                value={otpValue}
-                onChange={(e) => setOtpValue(e.target.value.replace(/\D/g, ""))}
-                placeholder="6-digit code"
-                className="w-full text-center tracking-[0.4em] font-bold text-sm px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-              />
-            </div>
-            <button
-              type="submit" disabled={verifying || otpValue.length !== 6}
-              className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {verifying ? "Verifying…" : "Verify & sign in"}
-            </button>
-            <button
-              type="button" onClick={onResend} disabled={sending}
-              className="w-full text-[11px] font-semibold text-[rgb(22,32,111)] py-1 disabled:opacity-50"
-            >
-              {sending ? "Regenerating…" : "Generate a new code"}
-            </button>
-          </form>
-        </div>
       </div>
     </div>
   );
@@ -701,42 +679,40 @@ export default function EasyClassWork() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [adCarouselIndex, setAdCarouselIndex] = useState(0);
 
-  // Schools now come from local storage instead of a backend.
+  // Approved schools come from the server (no codes, no contact details).
   const [schools, setSchools] = useState([]);
   const [schoolsLoading, setSchoolsLoading] = useState(true);
 
   useEffect(() => {
-    setSchoolsLoading(true);
-    const timer = setTimeout(() => {
-      setSchools(getSchools());
-      setSchoolsLoading(false);
-    }, 300); // tiny delay so the loading state still shows briefly
-    return () => clearTimeout(timer);
+    let cancelled = false;
+    async function loadSchools() {
+      setSchoolsLoading(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/schools/public`);
+        const data = await res.json().catch(() => ({}));
+        if (!cancelled) setSchools(res.ok && data.success ? data.schools : []);
+      } catch {
+        if (!cancelled) setSchools([]);
+      } finally {
+        if (!cancelled) setSchoolsLoading(false);
+      }
+    }
+    loadSchools();
+    return () => { cancelled = true; };
   }, []);
 
   // Login / registration modal state.
   const [authView, setAuthView] = useState(null);
   const [formError, setFormError] = useState("");
   const [authSubmitting, setAuthSubmitting] = useState(false);
-  const [loginForm, setLoginForm] = useState({ email: "", schoolCode: "" });
-  const [registerForm, setRegisterForm] = useState({
-    fullName: "", email: "", school: "", schoolCode: "", password: "", confirmPassword: "",
-  });
+  const [registerForm, setRegisterForm] = useState({ fullName: "", email: "", school: "", schoolCode: "" });
 
   const [googleAccount, setGoogleAccount] = useState(null);
   const [pendingApproval, setPendingApproval] = useState(null); // { roleLabel, schoolName } | null
 
-  // School-admin second factor.
-  const [otpModalOpen, setOtpModalOpen] = useState(false);
-  const [pendingAdminAuth, setPendingAdminAuth] = useState(null); // { email, schoolCode, code, schoolName }
-  const [otpValue, setOtpValue] = useState("");
-  const [otpSending, setOtpSending] = useState(false);
-  const [otpVerifying, setOtpVerifying] = useState(false);
-  const [otpError, setOtpError] = useState("");
-
   const [teacherStep, setTeacherStep] = useState(null);
 
-  const isOverlayActive = isRegisterLoading || Boolean(authView) || otpModalOpen || Boolean(pendingApproval) || Boolean(teacherStep);
+  const isOverlayActive = isRegisterLoading || Boolean(authView) || Boolean(pendingApproval) || Boolean(teacherStep);
 
   useEffect(() => {
     if (!isRegisterLoading) { setLoadingStep(0); return; }
@@ -767,8 +743,7 @@ export default function EasyClassWork() {
     setFormError("");
     setAuthSubmitting(false);
     setGoogleAccount(null);
-    setLoginForm({ email: "", schoolCode: "" });
-    setRegisterForm({ fullName: "", email: "", school: "", schoolCode: "", password: "", confirmPassword: "" });
+    setRegisterForm({ fullName: "", email: "", school: "", schoolCode: "" });
     setAuthView({ role, mode });
   };
 
@@ -780,19 +755,62 @@ export default function EasyClassWork() {
     setAuthView((prev) => (prev ? { ...prev, mode } : prev));
   };
 
+  // ------------------------------------------------------------------
+  // School admin + super admin sign-in.
+  // The Google token goes to the server, which verifies it with Google and
+  // decides whether this account is allowed in.
+  // ------------------------------------------------------------------
+  async function signInAdmin(role, account) {
+    setFormError("");
+    setAuthSubmitting(true);
+    const isSuper = role === "superAdmin";
+
+    try {
+      const res = await fetch(`${API_BASE}${isSuper ? "/api/superadmin/login" : "/api/schools/login"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: account.credential }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.success) {
+        setFormError(data.error || "Sign-in failed. Please try again.");
+        setGoogleAccount(null);
+        return;
+      }
+
+      if (isSuper) {
+        localStorage.setItem(SUPERADMIN_SESSION_KEY, JSON.stringify({ token: data.token, email: data.email }));
+        setAuthView(null);
+        handleNavigate("/dashboard/superAdmin", { token: data.token, email: data.email });
+      } else {
+        localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token: data.token, school: data.school }));
+        setAuthView(null);
+        handleNavigate("/dashboard/schoolAdmin", { token: data.token, school: data.school });
+      }
+    } catch {
+      setFormError("Could not reach the server. Check your connection and try again.");
+      setGoogleAccount(null);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
   const handleGoogleSignedIn = (account) => {
     setFormError("");
     setGoogleAccount(account);
     setRegisterForm((f) => ({ ...f, fullName: f.fullName || account.name, email: account.email }));
+
+    // Admins don't need a second click: sign in as soon as Google confirms them.
+    if (authView?.mode === "login" && isAdminRole(authView.role)) {
+      signInAdmin(authView.role, account);
+    }
   };
 
-  const handleGoogleSwitch = () => setGoogleAccount(null);
-
-  const closeOtpModal = () => {
-    setOtpModalOpen(false);
-    setPendingAdminAuth(null);
-    setOtpValue("");
-    setOtpError("");
+  const handleGoogleSwitch = () => {
+    setFormError("");
+    setGoogleAccount(null);
+    window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
   // ------------------------------------------------------------------
@@ -922,177 +940,121 @@ export default function EasyClassWork() {
     localStorage.removeItem(USER_SESSION_KEY);
   };
 
+  // ------------------------------------------------------------------
+  // Login submit
+  // ------------------------------------------------------------------
   const handleLoginSubmit = (e) => {
     e.preventDefault();
     setFormError("");
     const role = authView?.role;
-    const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
 
-    if (config.authField === "google") {
-      if (!googleAccount) { setFormError("Continue with Google first."); return; }
+    if (!googleAccount) { setFormError("Continue with Google first."); return; }
 
-      // SUPER ADMIN — gated entirely by AUTHORIZED_SUPERADMIN_EMAIL, checked
-      // client-side. No password, no server round trip.
-      if (role === "superAdmin") {
-        setAuthSubmitting(true);
-        setTimeout(() => {
-          if (googleAccount.email.toLowerCase() !== AUTHORIZED_SUPERADMIN_EMAIL.toLowerCase()) {
-            setFormError("This Google account is not authorized for super admin access.");
-            setAuthSubmitting(false);
-            return;
-          }
-          const token = randomId("sat");
-          localStorage.setItem(SUPERADMIN_SESSION_KEY, JSON.stringify({ token, email: googleAccount.email }));
-          setAuthSubmitting(false);
-          setAuthView(null);
-          handleNavigate("/dashboard/superAdmin", { token, email: googleAccount.email });
-        }, 500);
-        return;
-      }
-
-      // Student / teacher — matched against the local "users" table.
-      setAuthSubmitting(true);
-      setTimeout(() => {
-        const users = getUsers();
-        const user = users.find((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
-
-        if (!user) {
-          setFormError("No account found for this email. Please register first.");
-          setAuthSubmitting(false);
-          return;
-        }
-        if (user.status === "pending") {
-          setFormError("Your account is still being reviewed. Please try again shortly.");
-          setAuthSubmitting(false);
-          return;
-        }
-
-        const token = randomId("tok");
-        localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token, user }));
-        setAuthSubmitting(false);
-        setAuthView(null);
-        if (role === "teacher") {
-          startTeacherClassStep(token, user, user.assignments || []);
-        } else {
-          handleNavigate(`/dashboard/${role}`, { token, email: user.email, name: user.fullName });
-        }
-      }, 500);
+    // Admin roles are checked by the server.
+    if (isAdminRole(role)) {
+      signInAdmin(role, googleAccount);
       return;
     }
 
-    if (config.authField === "schoolCode") {
-      if (!loginForm.email || !loginForm.schoolCode) {
-        setFormError("Please enter your email and school code.");
-        return;
-      }
-      setAuthSubmitting(true);
-      setTimeout(() => {
-        const allSchools = getSchools();
-        const school = allSchools.find((s) => s.code === loginForm.schoolCode.trim());
-        if (!school) {
-          setFormError("That school code was not recognized.");
-          setAuthSubmitting(false);
-          return;
-        }
-        const code = randomCode();
-        setPendingAdminAuth({ email: loginForm.email, schoolCode: loginForm.schoolCode, code, schoolName: school.name, schoolId: school.id });
-        setOtpValue("");
-        setOtpError("");
-        setAuthSubmitting(false);
-        setAuthView(null);
-        setOtpModalOpen(true);
-      }, 500);
-      return;
-    }
-  };
-
-  const handleVerifyAdminOtp = (e) => {
-    e.preventDefault();
-    if (!pendingAdminAuth) return;
-    setOtpVerifying(true);
-    setOtpError("");
+    // Student / teacher — matched against the local "users" table.
+    setAuthSubmitting(true);
     setTimeout(() => {
-      if (otpValue !== pendingAdminAuth.code) {
-        setOtpError("That code is not correct. Please try again.");
-        setOtpVerifying(false);
+      const users = getUsers();
+      const user = users.find((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
+
+      if (!user) {
+        setFormError("No account found for this email. Please register first.");
+        setAuthSubmitting(false);
         return;
       }
-      const token = randomId("adm");
-      localStorage.setItem(ADMIN_SESSION_KEY, JSON.stringify({ token, school: { id: pendingAdminAuth.schoolId, name: pendingAdminAuth.schoolName } }));
-      setOtpVerifying(false);
-      setOtpModalOpen(false);
-      setPendingAdminAuth(null);
-      handleNavigate("/dashboard/schoolAdmin", { token, school: { id: pendingAdminAuth.schoolId, name: pendingAdminAuth.schoolName } });
+      if (user.status === "pending") {
+        setFormError("Your account is still being reviewed. Please try again shortly.");
+        setAuthSubmitting(false);
+        return;
+      }
+
+      const token = randomId("tok");
+      localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token, user }));
+      setAuthSubmitting(false);
+      setAuthView(null);
+      if (role === "teacher") {
+        startTeacherClassStep(token, user, user.assignments || []);
+      } else {
+        handleNavigate(`/dashboard/${role}`, { token, email: user.email, name: user.fullName });
+      }
     }, 500);
   };
 
-  const handleResendAdminOtp = () => {
-    if (!pendingAdminAuth) return;
-    setOtpSending(true);
-    setOtpError("");
-    setTimeout(() => {
-      setPendingAdminAuth((p) => (p ? { ...p, code: randomCode() } : p));
-      setOtpSending(false);
-    }, 400);
-  };
-
-  const handleRegisterSubmit = (e) => {
+  // ------------------------------------------------------------------
+  // Student / teacher registration
+  // The school code is checked by the server against the approved school.
+  // ------------------------------------------------------------------
+  const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     setFormError("");
     const role = authView?.role;
-    const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
 
-    if (config.authField === "google") {
-      if (!googleAccount) { setFormError("Continue with Google first."); return; }
-      const { fullName, school, schoolCode } = registerForm;
-      if (!fullName || !school || !schoolCode) { setFormError("Please fill in every field."); return; }
+    if (!googleAccount) { setFormError("Continue with Google first."); return; }
+    const { fullName, school, schoolCode } = registerForm;
+    if (!fullName || !school || !schoolCode) { setFormError("Please fill in every field."); return; }
 
-      const chosenSchool = schools.find((s) => s.id === school);
-      if (!chosenSchool || chosenSchool.code !== schoolCode.trim()) {
-        setFormError("That school code doesn't match the selected school.");
+    const chosenSchool = schools.find((s) => s.id === school);
+    if (!chosenSchool) { setFormError("Please choose your school."); return; }
+
+    setAuthSubmitting(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/schools/verify-code`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ schoolId: school, schoolCode: schoolCode.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setFormError(data.error || "That school code doesn't match the selected school.");
+        setAuthSubmitting(false);
         return;
       }
-
-      setAuthSubmitting(true);
-      setTimeout(() => {
-        const users = getUsers();
-        const alreadyExists = users.some((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
-        if (alreadyExists) {
-          setFormError("An account already exists for this email. Please sign in instead.");
-          setAuthSubmitting(false);
-          return;
-        }
-
-        const newUser = {
-          id: randomId("usr"),
-          role,
-          fullName,
-          email: googleAccount.email,
-          googleSub: googleAccount.googleSub,
-          schoolId: school,
-          status: "pending",
-          assignments: [],
-        };
-        users.push(newUser);
-        saveUsers(users);
-
-        setAuthSubmitting(false);
-        setAuthView(null);
-        setPendingApproval({ roleLabel: ROLE_CONFIG[role].label, schoolName: chosenSchool.name });
-
-        // No admin panel to click "approve" in this build — auto-approve
-        // shortly after, so the sign-in flow above actually works.
-        setTimeout(() => {
-          const list = getUsers();
-          const idx = list.findIndex((u) => u.id === newUser.id);
-          if (idx >= 0) { list[idx].status = "approved"; saveUsers(list); }
-        }, 2500);
-      }, 500);
+    } catch {
+      setFormError("Could not reach the server. Check your connection and try again.");
+      setAuthSubmitting(false);
       return;
     }
-  };
 
-  const ActiveAdIcon = AD_CIRCLE_ICONS[adCarouselIndex % AD_CIRCLE_ICONS.length];
+    const users = getUsers();
+    const alreadyExists = users.some((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
+    if (alreadyExists) {
+      setFormError("An account already exists for this email. Please sign in instead.");
+      setAuthSubmitting(false);
+      return;
+    }
+
+    const newUser = {
+      id: randomId("usr"),
+      role,
+      fullName,
+      email: googleAccount.email,
+      googleSub: googleAccount.googleSub,
+      schoolId: school,
+      status: "pending",
+      assignments: [],
+    };
+    users.push(newUser);
+    saveUsers(users);
+
+    setAuthSubmitting(false);
+    setAuthView(null);
+    setPendingApproval({ roleLabel: ROLE_CONFIG[role].label, schoolName: chosenSchool.name });
+
+    // Student/teacher accounts still live in this browser only, so there is no
+    // admin panel to click "approve". Auto-approve shortly after so the sign-in
+    // flow works.
+    setTimeout(() => {
+      const list = getUsers();
+      const idx = list.findIndex((u) => u.id === newUser.id);
+      if (idx >= 0) { list[idx].status = "approved"; saveUsers(list); }
+    }, 2500);
+  };
 
   return (
     <>
@@ -1137,8 +1099,8 @@ export default function EasyClassWork() {
         <AuthModal
           role={authView.role} mode={authView.mode}
           onClose={closeAuth} onSwitchMode={switchAuthMode}
+          onRegisterSchool={() => { closeAuth(); handleNavigate("/register"); }}
           registerForm={registerForm} setRegisterForm={setRegisterForm}
-          loginForm={loginForm} setLoginForm={setLoginForm}
           formError={formError} authSubmitting={authSubmitting}
           onSubmitRegister={handleRegisterSubmit} onSubmitLogin={handleLoginSubmit}
           googleAccount={googleAccount} onGoogleSignedIn={handleGoogleSignedIn} onGoogleSwitch={handleGoogleSwitch}
@@ -1151,16 +1113,6 @@ export default function EasyClassWork() {
           roleLabel={pendingApproval.roleLabel}
           schoolName={pendingApproval.schoolName}
           onClose={() => setPendingApproval(null)}
-        />
-      )}
-
-      {otpModalOpen && pendingAdminAuth && (
-        <AdminOtpModal
-          email={pendingAdminAuth.email}
-          generatedCode={pendingAdminAuth.code}
-          otpValue={otpValue} setOtpValue={setOtpValue}
-          verifying={otpVerifying} sending={otpSending} error={otpError}
-          onSubmit={handleVerifyAdminOtp} onResend={handleResendAdminOtp} onClose={closeOtpModal}
         />
       )}
 
@@ -1482,8 +1434,8 @@ export default function EasyClassWork() {
             <div className="hidden sm:block absolute left-8 top-6 bottom-6 w-0.5 bg-[#178754] opacity-80 rounded" />
             <div className="flex flex-col gap-6">
               {[
-                { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details." },
-                { i: 2, title: "Get your school code", text: "Right after registering, your school gets a code to share with staff and students." },
+                { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details and phone number." },
+                { i: 2, title: "Get approved", text: "Our team calls you to confirm payment, approves your school, and emails you your school code." },
                 { i: 3, title: "Add staff and students", text: "Teachers and students sign up with Google using your school code." },
                 { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords to manage or forget." },
                 { i: 5, title: "Publish notes and quizzes", text: "Teachers start uploading materials the same day." },
@@ -1519,7 +1471,8 @@ export default function EasyClassWork() {
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Choose your dashboard</h2>
             <p className="ecw-body text-xs text-neutral-600 mt-2">
               Students and teachers verify their email and sign in with Google — teachers also pick every
-              class and subject they teach at sign-in. School admins sign in with their school email and code.
+              class and subject they teach at sign-in. School admins sign in with the same Google account
+              they registered their school with, once the school has been approved.
             </p>
           </div>
 
@@ -1527,7 +1480,7 @@ export default function EasyClassWork() {
             {[
               { role: "student", bg: "#EAF6EF", tint: "#178754", title: "Student dashboard", text: "Read class notes, take quizzes and check your report card, signed in with Google." },
               { role: "teacher", bg: "#E6F1FB", tint: "#1D6FE0", title: "Teacher dashboard", text: "Upload lesson materials, grade work and record attendance — choose every class and subject you teach when you sign in with Google." },
-              { role: "schoolAdmin", bg: "#EAF6EF", tint: "#178754", title: "School admin", text: "Manage staff accounts, student codes and fees for your own school — sign in with email and school code." },
+              { role: "schoolAdmin", bg: "#EAF6EF", tint: "#178754", title: "School admin", text: "Manage staff accounts, student codes and fees for your own school — sign in with the Google account you registered with." },
               { role: "superAdmin", bg: "#E6F1FB", tint: "#1D6FE0", title: "Super admin", text: "Oversee every school on the platform — sign in with the authorized Google account." },
             ].map(({ role, bg, tint, title, text }) => {
               const RoleIcon = ROLE_CONFIG[role].icon;
@@ -1554,7 +1507,7 @@ export default function EasyClassWork() {
               <div>
                 <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">School registration</span>
                 <p className="ecw-heading text-xl font-extrabold text-neutral-900 mt-1">150,000 RWF <span className="ecw-body text-xs font-medium text-neutral-500">/ term</span></p>
-                <p className="ecw-body text-xs text-neutral-600 mt-1">Includes notes, quiz, report cards and a school code to add your staff and students.</p>
+                <p className="ecw-body text-xs text-neutral-600 mt-1">Includes notes, quiz, report cards and a school code to add your staff and students. Your code is emailed to you once your school is approved.</p>
               </div>
               <button
                 type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}

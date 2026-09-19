@@ -8,26 +8,35 @@ import {
   AlertCircle,
   School,
   Languages,
-  Clock3,
   ImageIcon,
   Link2,
   Upload,
   ShieldCheck,
   RefreshCw,
+  Loader2,
+  Phone,
+  Mail,
+  ClipboardCheck,
+  KeyRound,
 } from "lucide-react";
 
 /* ============================================================================
-   CONFIG — frontend-only. No API_BASE, no server calls anywhere in this file.
-   The only "external" thing that happens is loading Google's own
-   accounts.google.com script so we can verify an email address — that is
-   still 100% client-side, no backend of ours involved.
+   CONFIG
+   Reads GOOGLE_CLIENT_ID and API_BASE from Vite env vars.
+   Create a `.env` file in your project root with:
+
+     VITE_GOOGLE_CLIENT_ID=your-real-client-id.apps.googleusercontent.com
+     VITE_API_BASE=http://localhost:5000
    ============================================================================ */
 
 const BRAND_NAME = "ESMS";
 
-// Replace with your own Google OAuth Client ID from
-// https://console.cloud.google.com/apis/credentials
-const GOOGLE_CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID =
+  import.meta.env?.VITE_GOOGLE_CLIENT_ID || "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com";
+
+const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:5000";
+
+const GOOGLE_CLIENT_ID_MISSING = !GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes("YOUR_GOOGLE_CLIENT_ID");
 
 const INITIAL_FORM = {
   schoolName: "",
@@ -39,6 +48,7 @@ const INITIAL_FORM = {
   emailVerified: false,
   emailName: "",
   emailPicture: "",
+  googleCredential: null, // raw Google ID token, re-verified on the server
 };
 
 /* ============================================================================
@@ -53,12 +63,6 @@ function normalizeRwandaPhone(raw) {
 }
 const isValidRwandaPhone = (raw) => /^07[0-9]{8}$/.test(normalizeRwandaPhone(raw));
 
-function generateSchoolCode() {
-  const n = Math.floor(100000 + Math.random() * 900000);
-  return `ECR-${n}`;
-}
-
-// Decodes a Google JWT credential purely client-side — no backend call.
 function decodeGoogleJwt(token) {
   const base64Url = token.split(".")[1];
   const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
@@ -88,10 +92,13 @@ const T_EN = {
   backHome: "Back to home",
   login: "Log in",
   langSwitch: "Kinyarwanda",
+  formEyebrow: "School registration",
+  formTitle: "Register your school",
   formDesc: "Just the essentials — school name, logo, phone number, and a verified email.",
   institutionSection: "Institution details",
   namePh: "School name",
   phonePh: "07XX XXX XXX",
+  phoneHint: "Our team will call this number to confirm your registration and payment.",
   phoneInvalid: "Enter a valid Rwandan number — 10 digits, starting with 078/079/073/072",
   phoneValid: "Valid Rwandan number",
   logoLabel: "School logo",
@@ -100,33 +107,37 @@ const T_EN = {
   logoLinkPh: "https://example.com/logo.png",
   logoHint: "PNG or JPG, square works best.",
   emailLabel: "School email",
-  emailHint: "We verify this through your Google account so a typed-in email can't be faked.",
-  continueWithGoogle: "Continue with Google",
+  emailHint: "We verify this through your Google account so a typed-in email can't be faked. You'll use it to sign in later.",
   googleLoadError: "Couldn't load Google sign-in. Check your connection and try again.",
+  googleNotConfigured: "Google sign-in isn't configured yet. Set VITE_GOOGLE_CLIENT_ID and try again.",
   verifiedAs: "Verified as",
   changeAccount: "Use a different account",
   submit: "Submit registration",
+  submitting: "Submitting…",
   already: "Already registered?",
-  successTitle: "Registration submitted",
-  successUnder: "has been registered.",
-  successSentTo: "A confirmation will be sent to",
-  yourSchoolCode: "Your school code",
-  keepCodeSafe: "Keep this code safe — you'll need it to log in.",
-  pendingVerification:
-    "One last step: our team reviews and approves every new school before its admin can sign in. You'll get an email as soon as that's done — usually within one business day.",
+  successTitle: "Registration received",
+  successUnder: "is registered and waiting for review.",
+  nextTitle: "What happens next",
+  stepReview: "Our team reviews your registration.",
+  stepCall: "We call {phone} to confirm your details and payment.",
+  stepCode: "Once approved, we email your school code to {email}.",
+  stepSignIn: "Then sign in with Google using that same email, and share the code with your teachers and students.",
   registerAnother: "Register another institution",
   validationError: "Please complete every field above, including verifying your email with Google.",
+  serverErrorFallback: "Something went wrong while submitting. Please try again.",
 };
 
 const T_RW = {
   backHome: "Garuka ahabanza",
   login: "Injira",
   langSwitch: "English",
-
+  formEyebrow: "Kwiyandikisha kw'ishuri",
+  formTitle: "Andikisha ishuri ryawe",
   formDesc: "Ibisabwa gusa — izina ry'ikigo, ikirango, telefoni, na email yemejwe.",
   institutionSection: "Amakuru y'ikigo",
   namePh: "Izina ry'ikigo",
   phonePh: "07XX XXX XXX",
+  phoneHint: "Itsinda ryacu rizahamagara iyi nimero kugira ngo ryemeze iyandikisha n'ubwishyu.",
   phoneInvalid: "Andika nimero nyayo yo mu Rwanda — imibare 10, itangira na 07",
   phoneValid: "Nimero nyayo yo mu Rwanda",
   logoLabel: "Ikirango cy'ishuri",
@@ -135,22 +146,24 @@ const T_RW = {
   logoLinkPh: "https://example.com/logo.png",
   logoHint: "PNG cyangwa JPG, isura ya kare niyo nziza.",
   emailLabel: "Email y'ishuri",
-  emailHint: "Turayemeza binyuze kuri konti yawe ya Google kugira ngo hatabaho email y'ibinyoma.",
-  continueWithGoogle: "Komeza na Google",
+  emailHint: "Turayemeza binyuze kuri konti yawe ya Google kugira ngo hatabaho email y'ibinyoma. Uzayikoresha winjira nyuma.",
   googleLoadError: "Ntibyashobotse gufungura Google. Reba interineti yawe hanyuma ugerageze.",
+  googleNotConfigured: "Kwinjira na Google ntibiraboneka. Shyiramo VITE_GOOGLE_CLIENT_ID hanyuma ugerageze.",
   verifiedAs: "Yemejwe nka",
   changeAccount: "Koresha indi konti",
   submit: "Ohereza iyandikisha",
+  submitting: "Kohereza…",
   already: "Wamaze kwiyandikisha?",
-  successTitle: "Iyandikisha ryoherejwe",
-  successUnder: "ryanditswe.",
-  successSentTo: "Iyemeza rizoherezwa kuri",
-  yourSchoolCode: "Kode y'ishuri ryawe",
-  keepCodeSafe: "Bika neza iyi kode — uzayikenera kugira ngo winjire.",
-  pendingVerification:
-    "Intambwe iheruka: itsinda ryacu risuzuma kandi ryemeza buri shuri rishya mbere y'uko umuyobozi waryo yinjira. Uzabona email igihe byemejwe — akenshi mu munsi umwe w'akazi.",
+  successTitle: "Iyandikisha ryakiriwe",
+  successUnder: "ryanditswe kandi ritegereje isuzumwa.",
+  nextTitle: "Ibikurikiraho",
+  stepReview: "Itsinda ryacu risuzuma iyandikisha ryawe.",
+  stepCall: "Turahamagara kuri {phone} kugira ngo twemeze amakuru n'ubwishyu.",
+  stepCode: "Iyo byemejwe, kode y'ishuri ryawe iboherezwa kuri {email}.",
+  stepSignIn: "Nyuma winjire na Google ukoresheje iyo email, hanyuma usangize abarimu n'abanyeshuri kode.",
   registerAnother: "Andikisha ikindi kigo",
   validationError: "Uzuza buri gice hejuru, harimo no kwemeza email yawe binyuze kuri Google.",
+  serverErrorFallback: "Hari ikitagenze neza mu kohereza. Ongera ugerageze.",
 };
 
 const TextCtx = createContext(T_EN);
@@ -160,9 +173,9 @@ const useT = () => useContext(TextCtx);
    DESIGN TOKENS
    ============================================================================ */
 
-const INK = "rgb(11,22,111)"; // blue
-const EMERALD = "#1E9E5A"; // green
-const ORANGE = "#FF4500"; // orange
+const INK = "rgb(11,22,111)";
+const EMERALD = "#1E9E5A";
+const ORANGE = "#FF4500";
 const ORANGE_BG = "#FFF1EC";
 const PAPER = "#FFFFFF";
 const LINE = "#E4E7F2";
@@ -194,6 +207,7 @@ function GlobalKeyframes() {
   return (
     <style>{`
       @keyframes popIn { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
+      @keyframes spin { to { transform: rotate(360deg); } }
       @media (prefers-reduced-motion: reduce) {
         * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
       }
@@ -223,7 +237,7 @@ function TopBar({ onBackHome, onLogin, lang, setLang }) {
           className="w-9 h-9 rounded-lg flex items-center justify-center ring-1 ring-slate-200"
           style={{ background: INK }}
         >
-          <img src={esms} alt="ESMS logo" className="w-full   h-full" />
+          <img src={esms} alt="ESMS logo" className="w-full h-full" />
         </span>
         <span className="text-[13px] font-extrabold tracking-tight" style={{ color: INK, fontFamily: "'Poppins', sans-serif" }}>
           {BRAND_NAME}
@@ -257,7 +271,7 @@ function TopBar({ onBackHome, onLogin, lang, setLang }) {
 }
 
 /* ============================================================================
-   GOOGLE SIGN-IN (client-side email verification)
+   GOOGLE SIGN-IN
    ============================================================================ */
 
 function useGoogleIdentity(onVerified) {
@@ -266,6 +280,7 @@ function useGoogleIdentity(onVerified) {
   const buttonRef = useRef(null);
 
   useEffect(() => {
+    if (GOOGLE_CLIENT_ID_MISSING) return;
     if (window.google?.accounts?.id) {
       setReady(true);
       return;
@@ -292,7 +307,7 @@ function useGoogleIdentity(onVerified) {
               email: payload.email,
               name: payload.name || "",
               picture: payload.picture || "",
-              verified: !!payload.email_verified,
+              credential: response.credential,
             });
           }
         } catch {
@@ -315,20 +330,28 @@ function useGoogleIdentity(onVerified) {
 function GoogleEmailField({ form, setForm }) {
   const t = useT();
 
-  const handleVerified = ({ email, name, picture, verified }) => {
+  const handleVerified = ({ email, name, picture, credential }) => {
     setForm((f) => ({
       ...f,
       email,
       emailName: name,
       emailPicture: picture,
-      emailVerified: verified !== false,
+      emailVerified: true,
+      googleCredential: credential,
     }));
   };
 
   const { error, buttonRef } = useGoogleIdentity(handleVerified);
 
   const reset = () => {
-    setForm((f) => ({ ...f, email: "", emailVerified: false, emailName: "", emailPicture: "" }));
+    setForm((f) => ({
+      ...f,
+      email: "",
+      emailVerified: false,
+      emailName: "",
+      emailPicture: "",
+      googleCredential: null,
+    }));
     window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
@@ -365,6 +388,10 @@ function GoogleEmailField({ form, setForm }) {
             {t.changeAccount}
           </button>
         </div>
+      ) : GOOGLE_CLIENT_ID_MISSING ? (
+        <p className="flex items-center gap-1.5 text-[11px] font-medium" style={{ color: ORANGE }}>
+          <AlertCircle size={12} strokeWidth={2.5} /> {t.googleNotConfigured}
+        </p>
       ) : (
         <div>
           <div ref={buttonRef} />
@@ -388,8 +415,9 @@ function RegistrationFormBody({ onLogin }) {
 
   const [form, setForm] = useState(INITIAL_FORM);
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [apiError, setApiError] = useState("");
   const [success, setSuccess] = useState(false);
-  const [schoolCode, setSchoolCode] = useState(null);
 
   const set = (key, value) => setForm((f) => ({ ...f, [key]: value }));
 
@@ -397,26 +425,54 @@ function RegistrationFormBody({ onLogin }) {
   const logoDone = form.logoMode === "upload" ? !!form.logoFile : !!form.logoUrl.trim();
   const nameDone = !!form.schoolName.trim();
 
-  const isValid = nameDone && phoneDone && logoDone && form.emailVerified;
-  const showValidationError = submitted && !isValid;
+  const isValid = nameDone && phoneDone && logoDone && form.emailVerified && !!form.googleCredential;
+  const showValidationError = submitted && !isValid && !submitting;
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault();
     setSubmitted(true);
+    setApiError("");
     if (!isValid) return;
-    setSchoolCode(generateSchoolCode());
-    setSuccess(true);
+
+    setSubmitting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/schools/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          schoolName: form.schoolName.trim(),
+          phone: form.phone,
+          logo: form.logoMode === "upload" ? form.logoFile : form.logoUrl.trim(),
+          googleCredential: form.googleCredential,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || data.success === false) {
+        setApiError(data.error || t.serverErrorFallback);
+        return;
+      }
+
+      // The school code is intentionally NOT returned by the server.
+      // It is emailed to the school after the super admin approves it.
+      setSuccess(true);
+    } catch (err) {
+      setApiError(t.serverErrorFallback);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function resetForm() {
     setForm(INITIAL_FORM);
     setSubmitted(false);
+    setApiError("");
     setSuccess(false);
-    setSchoolCode(null);
   }
 
   if (success) {
-    return <SuccessScreen form={form} schoolCode={schoolCode} onRegisterAnother={resetForm} />;
+    return <SuccessScreen form={form} onRegisterAnother={resetForm} />;
   }
 
   return (
@@ -439,13 +495,20 @@ function RegistrationFormBody({ onLogin }) {
             </p>
           )}
 
+          {apiError && (
+            <p className="flex items-center gap-1.5 text-xs font-medium" style={{ color: ORANGE }}>
+              <AlertCircle size={14} strokeWidth={2.5} /> {apiError}
+            </p>
+          )}
+
           <button
             type="submit"
-            disabled={!isValid}
-            className="w-full rounded-lg text-white text-sm font-bold py-3 hover:opacity-95 transition-opacity disabled:opacity-35 disabled:cursor-not-allowed shadow-sm"
+            disabled={!isValid || submitting}
+            className="w-full inline-flex items-center justify-center gap-2 rounded-lg text-white text-sm font-bold py-3 hover:opacity-95 transition-opacity disabled:opacity-35 disabled:cursor-not-allowed shadow-sm"
             style={{ background: INK }}
           >
-            {t.submit}
+            {submitting && <Loader2 size={15} strokeWidth={2.5} style={{ animation: "spin 0.8s linear infinite" }} />}
+            {submitting ? t.submitting : t.submit}
           </button>
 
           <p className="text-center text-xs text-slate-500">
@@ -520,7 +583,11 @@ function InstitutionFields({ form, set, phoneDone }) {
             onChange={(e) => set("phone", e.target.value.replace(/[^\d+\s-]/g, ""))}
             placeholder={t.phonePh}
           />
-          <FieldStatus show={!!form.phone} ok={phoneDone} okText={t.phoneValid} badText={t.phoneInvalid} />
+          {form.phone ? (
+            <FieldStatus show ok={phoneDone} okText={t.phoneValid} badText={t.phoneInvalid} />
+          ) : (
+            <p className="text-[11px] text-slate-400 mt-1.5">{t.phoneHint}</p>
+          )}
         </div>
       </div>
     </div>
@@ -571,7 +638,7 @@ function LogoField({ form, set }) {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/png,image/jpeg,image/webp,image/gif"
                 className="hidden"
                 onChange={handleFile}
               />
@@ -621,12 +688,25 @@ function TabButton({ active, onClick, icon: Icon, children }) {
   );
 }
 
-function SuccessScreen({ form, schoolCode, onRegisterAnother }) {
+/* ============================================================================
+   SUCCESS SCREEN
+   No school code here: it goes to the super admin, and is emailed to the
+   school only after approval.
+   ============================================================================ */
+
+function SuccessScreen({ form, onRegisterAnother }) {
   const t = useT();
   const previewSrc = form.logoMode === "upload" ? form.logoFile : form.logoUrl;
 
+  const steps = [
+    { icon: ClipboardCheck, text: t.stepReview },
+    { icon: Phone, text: t.stepCall.replace("{phone}", form.phone) },
+    { icon: Mail, text: t.stepCode.replace("{email}", form.email) },
+    { icon: KeyRound, text: t.stepSignIn },
+  ];
+
   return (
-    <div className="min-h-[65vh] flex items-center justify-center px-4">
+    <div className="min-h-[65vh] flex items-center justify-center px-4 pb-10">
       <div className="w-full max-w-sm text-center bg-white border border-slate-200 rounded-2xl shadow-lg px-6 sm:px-7 py-9" style={{ animation: "popIn 0.25s ease-out" }}>
         {previewSrc ? (
           <img src={previewSrc} alt="School logo" className="w-14 h-14 rounded-full mx-auto mb-4 object-cover ring-2" style={{ borderColor: EMERALD }} />
@@ -638,20 +718,27 @@ function SuccessScreen({ form, schoolCode, onRegisterAnother }) {
 
         <h1 className="text-lg font-bold mb-1.5" style={{ color: INK, fontFamily: "'Poppins', sans-serif" }}>{t.successTitle}</h1>
         <p className="text-xs text-slate-500 mb-5">
-          {form.schoolName} {t.successUnder} {t.successSentTo} {form.email}.
+          <span className="font-semibold" style={{ color: INK }}>{form.schoolName}</span> {t.successUnder}
         </p>
 
-        {schoolCode && (
-          <div className="mb-5 rounded-xl border px-4 py-4" style={{ borderColor: EMERALD, background: "#ECFDF5" }}>
-            <div className="text-[11px] font-semibold text-slate-500 mb-1">{t.yourSchoolCode}</div>
-            <div className="text-xl font-extrabold tracking-wider" style={{ color: INK }}>{schoolCode}</div>
-            <div className="text-[11px] text-slate-500 mt-1">{t.keepCodeSafe}</div>
-          </div>
-        )}
-
-        <div className="mb-5 flex items-start gap-2 rounded-xl border px-3.5 py-3 text-left" style={{ borderColor: ORANGE + "55", background: ORANGE_BG }}>
-          <Clock3 size={15} color={ORANGE} strokeWidth={2.5} className="shrink-0 mt-0.5" />
-          <p className="text-[11px] leading-relaxed" style={{ color: "#9A3412" }}>{t.pendingVerification}</p>
+        <div className="mb-5 rounded-xl border px-4 py-4 text-left" style={{ borderColor: ORANGE + "55", background: ORANGE_BG }}>
+          <p className="text-[11px] font-bold mb-3" style={{ color: "#9A3412" }}>{t.nextTitle}</p>
+          <ol className="flex flex-col gap-3">
+            {steps.map(({ icon: Icon, text }, i) => (
+              <li key={i} className="flex items-start gap-2.5">
+                <span
+                  className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 text-[10px] font-bold text-white mt-px"
+                  style={{ background: ORANGE }}
+                >
+                  {i + 1}
+                </span>
+                <span className="flex items-start gap-1.5 text-[11px] leading-relaxed break-words min-w-0" style={{ color: "#9A3412" }}>
+                  <Icon size={13} strokeWidth={2.5} className="shrink-0 mt-0.5" />
+                  <span className="min-w-0">{text}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
         </div>
 
         <button

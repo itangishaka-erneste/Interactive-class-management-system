@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import esms from './assets/esms.jpg';
 import {
-  ShieldCheck, Bell, Filter, Users, UserCog, LogOut, Settings, LayoutGrid,
-  Building2, Megaphone, Pencil, Trash2, X, ChevronDown, Menu,
-  Search, Ban, CheckCircle2, Circle, Save, Send, Activity, School,
-  Mail, Phone, Clock, CreditCard, Globe, KeyRound, RefreshCw, AlertCircle,
+  ShieldCheck, Bell, Filter, UserCog, LogOut, Settings, LayoutGrid,
+  Building2, Megaphone, Trash2, X, ChevronDown, Menu,
+  Search, Ban, CheckCircle2, Circle, Save, Send, Activity,
+  Mail, Phone, Clock, CreditCard, Globe, RefreshCw, AlertCircle, XCircle,
 } from 'lucide-react';
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -17,7 +18,7 @@ const t = {
   text: '#111827',
   subtext: '#6B7280',
   faint: '#9CA3AF',
-  
+
   blue: '#3B82F6',
   blueSoft: '#EFF6FF',
   green: '#10B981',
@@ -26,7 +27,7 @@ const t = {
   orangeSoft: '#FEF3C7',
   red: '#EF4444',
   redSoft: '#FEE2E2',
-  
+
   shimmer1: '#E5E7EB',
   shimmer2: '#F3F4F6',
 };
@@ -35,15 +36,40 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 const fmtDate = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }); };
 const fmtDateTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); };
 
-const API_BASE = 'https://easy-class-work-records.onrender.com';
+// Local backend while you run `npm run dev`, hosted backend once you deploy.
+// (Vite sets import.meta.env.DEV to true only in dev.) Change either URL if needed.
+const API_BASE = import.meta.env.DEV
+  ? 'http://localhost:5000'
+  : 'https://easy-class-work-records.onrender.com';
 const SUPERADMIN_SESSION_KEY = 'ecw_superadmin_session';
+const ANNOUNCEMENTS_KEY = 'ecw_superadmin_announcements';
 
+// The backend stores "pending" (plus a separate payment flag). The dashboard splits
+// it into two labels so you can see at a glance which schools still owe payment.
 const STATUS_META = {
   active: { bg: t.greenSoft, color: t.green, label: 'Active' },
   suspended: { bg: t.redSoft, color: t.red, label: 'Suspended' },
+  rejected: { bg: t.redSoft, color: t.red, label: 'Rejected' },
   pending_review: { bg: t.blueSoft, color: t.blue, label: 'Pending review' },
   pending_payment: { bg: t.orangeSoft, color: t.orange, label: 'Pending payment' },
 };
+
+// Backend already returns { id, name, email, phone, code, status, paymentStatus, createdAt, codeSentAt }.
+const mapSchool = (s) => ({
+  ...s,
+  status: String(s.status).startsWith('pending')
+    ? (s.paymentStatus ? 'pending_review' : 'pending_payment')
+    : s.status,
+});
+
+function readSession() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SUPERADMIN_SESSION_KEY));
+    return parsed?.token ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 /* -------------------------------- PRIMITIVES -------------------------------- */
 
@@ -81,13 +107,16 @@ function Badge({ children, bg, color }) {
   return <span style={{ background: bg, color, fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, whiteSpace: 'nowrap' }}>{children}</span>;
 }
 function StatusBadge({ status }) {
-  const c = STATUS_META[status] || STATUS_META.pending_review;
+  const c = STATUS_META[status] || { bg: t.panel, color: t.subtext, label: String(status || 'Unknown') };
   return <Badge bg={c.bg} color={c.color}>{c.label}</Badge>;
+}
+function PaymentBadge({ paid }) {
+  return paid ? <Badge bg={t.greenSoft} color={t.green}>Paid</Badge> : <Badge bg={t.orangeSoft} color={t.orange}>Unpaid</Badge>;
 }
 function IconBtn({ icon: Icon, onClick, tone = 'default', title, size = 30, disabled }) {
   const tones = { default: { bg: t.panel, color: t.subtext }, orange: { bg: t.orangeSoft, color: t.orange }, red: { bg: t.redSoft, color: t.red }, blue: { bg: t.blueSoft, color: t.blue }, green: { bg: t.greenSoft, color: t.green } };
   const c = tones[tone];
-  return <button type="button" title={title} onClick={onClick} disabled={disabled} className="pa-btn" style={{ width: size, height: size, borderRadius: 8, border: 'none', background: c.bg, color: c.color, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1, flexShrink: 0 }}><Icon size={size * 0.46} /></button>;
+  return <button type="button" title={title} aria-label={title} onClick={onClick} disabled={disabled} className="pa-btn" style={{ width: size, height: size, borderRadius: 8, border: 'none', background: c.bg, color: c.color, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1, flexShrink: 0 }}><Icon size={size * 0.46} /></button>;
 }
 function Button({ children, onClick, icon: Icon, variant = 'solid', disabled, style }) {
   const styles = { solid: { background: t.green, color: '#fff', border: 'none' }, blue: { background: t.blue, color: '#fff', border: 'none' }, soft: { background: t.orangeSoft, color: t.orange, border: 'none' }, redSoft: { background: t.redSoft, color: t.red, border: 'none' }, outline: { background: '#fff', color: t.text, border: `1px solid ${t.border}` } };
@@ -99,13 +128,6 @@ function Button({ children, onClick, icon: Icon, variant = 'solid', disabled, st
 }
 function Field({ label, children }) { return <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}><label style={{ fontSize: 11, fontWeight: 700, color: t.subtext }}>{label}</label>{children}</div>; }
 function Input(props) { return <input {...props} style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: '9px 11px', fontSize: 13, color: t.text, background: t.panel, outline: 'none', width: '100%', ...(props.style || {}) }} />; }
-function Select({ value, onChange, options }) {
-  return (
-    <select value={value} onChange={e => onChange(e.target.value)} style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: '9px 11px', fontSize: 13, color: t.text, background: t.panel, outline: 'none', width: '100%' }}>
-      {options.map(o => <option key={o.value ?? o} value={o.value ?? o}>{o.label ?? o}</option>)}
-    </select>
-  );
-}
 function Dropdown({ value, options, onChange, icon: Icon }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -169,14 +191,131 @@ function Table({ columns, rows, renderRow, empty }) {
   if (rows.length === 0) return empty;
   return (
     <div className="pa-table-wrap" style={{ border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 780 }}>
         <thead><tr style={{ background: t.panel }}>{columns.map(c => <th key={c} style={{ textAlign: 'left', padding: '10px 14px', fontSize: 10.5, fontWeight: 700, color: t.subtext, letterSpacing: 0.4, textTransform: 'uppercase', borderBottom: `1px solid ${t.border}` }}>{c}</th>)}</tr></thead>
         <tbody>{rows.map(renderRow)}</tbody>
       </table>
     </div>
   );
 }
-const Td = ({ children, style }) => <td style={{ padding: '11px 14px', fontSize: 12.5, color: t.text, borderBottom: `1px solid ${t.border}`, verticalAlign: 'middle', ...style }}>{children}</td>;
+// Passes extra props (like onClick) through to the <td>.
+const Td = ({ children, style, ...rest }) => <td {...rest} style={{ padding: '11px 14px', fontSize: 12.5, color: t.text, borderBottom: `1px solid ${t.border}`, verticalAlign: 'middle', ...style }}>{children}</td>;
+
+function Flash({ flash, onClose }) {
+  if (!flash) return null;
+  const map = {
+    error: { bg: t.redSoft, fg: t.red, Icon: AlertCircle },
+    warn: { bg: t.orangeSoft, fg: t.orange, Icon: AlertCircle },
+    success: { bg: t.greenSoft, fg: t.green, Icon: CheckCircle2 },
+  };
+  const c = map[flash.type] || map.error;
+  return (
+    <div className="pa-fade" role="alert" style={{ display: 'flex', gap: 9, alignItems: 'flex-start', background: c.bg, borderRadius: 8, padding: '10px 13px', color: c.fg, fontSize: 12.5, fontWeight: 600 }}>
+      <c.Icon size={15} style={{ marginTop: 1, flexShrink: 0 }} />
+      <span style={{ flex: 1, lineHeight: 1.5 }}>{flash.text}</span>
+      <button type="button" onClick={onClose} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: c.fg, cursor: 'pointer', display: 'flex', padding: 0 }}><X size={15} /></button>
+    </div>
+  );
+}
+
+/* ---------------------------------- GOOGLE LOGIN ---------------------------------- */
+
+function loadGoogleScript() {
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts?.id) return resolve();
+    const existing = document.getElementById('google-gsi-script');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Could not load Google sign-in.')));
+      return;
+    }
+    const s = document.createElement('script');
+    s.id = 'google-gsi-script';
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.defer = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('Could not load Google sign-in. Check your internet connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+function LoginScreen({ onSuccess, notice, onBack }) {
+  const btnRef = useRef(null);
+  const [ready, setReady] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function handleCredential(response) {
+      setError('');
+      setSigningIn(true);
+      try {
+        const res = await fetch(`${API_BASE}/api/superadmin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: response.credential }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) throw new Error(data.message || data.error || 'Sign-in failed.');
+        onSuccess({ token: data.token, email: data.email, name: data.name });
+      } catch (err) {
+        if (!cancelled) setError(err instanceof TypeError ? 'Could not reach the server. Please check your connection.' : err.message);
+      } finally {
+        if (!cancelled) setSigningIn(false);
+      }
+    }
+
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/superadmin/config`);
+        const cfg = await res.json().catch(() => ({}));
+        if (!res.ok || !cfg.googleClientId) throw new Error(cfg.message || 'Google sign-in is not configured on the server.');
+        await loadGoogleScript();
+        if (cancelled || !btnRef.current) return;
+        window.google.accounts.id.initialize({ client_id: cfg.googleClientId, callback: handleCredential });
+        window.google.accounts.id.renderButton(btnRef.current, { theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width: 280 });
+        setReady(true);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof TypeError ? 'Could not reach the server. Please check your connection.' : err.message);
+      }
+    })();
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div className="pa-fade" style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 12, padding: 28, width: 380, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: t.white, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><img src={esms} alt="Easy Class" style={{ width: 20, height: 20 }} /></div>
+          <div>
+            <p className="pa-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>Easy Class</p>
+            <p style={{ margin: 0, fontSize: 11, color: t.subtext }}>Platform control</p>
+          </div>
+        </div>
+        <div>
+          <h1 className="pa-heading" style={{ margin: 0, fontSize: 18, fontWeight: 700, color: t.text }}>Super admin sign in</h1>
+          <p style={{ margin: '6px 0 0', fontSize: 12.5, color: t.subtext, lineHeight: 1.55 }}>Continue with the Google account registered as the platform owner.</p>
+        </div>
+
+        {notice && <Flash flash={{ type: 'warn', text: notice }} onClose={() => {}} />}
+        {error && <Flash flash={{ type: 'error', text: error }} onClose={() => setError('')} />}
+
+        <div style={{ minHeight: 44, display: 'flex', justifyContent: 'center', alignItems: 'center', opacity: signingIn ? 0.5 : 1, pointerEvents: signingIn ? 'none' : 'auto' }}>
+          {!ready && !error && <Skeleton w={280} h={40} r={6} />}
+          <div ref={btnRef} />
+        </div>
+        {signingIn && <p style={{ margin: 0, fontSize: 12, color: t.subtext, textAlign: 'center' }}>Verifying your account…</p>}
+
+        <button type="button" onClick={onBack} className="pa-btn" style={{ background: 'none', border: 'none', color: t.subtext, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Back to site</button>
+      </div>
+    </div>
+  );
+}
 
 /* ---------------------------------- SIDEBAR / HEADER ---------------------------------- */
 
@@ -185,7 +324,7 @@ function NavItem({ icon: Icon, label, count, active, onClick }) {
     <li onClick={onClick} style={{ display: 'grid', gridTemplateColumns: '20px 1fr auto', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 8, cursor: 'pointer', background: active ? t.blueSoft : 'transparent', color: active ? t.blue : t.text }}
       onMouseEnter={e => { if (!active) e.currentTarget.style.background = t.panel; }} onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}>
       <Icon size={15} /><span style={{ fontSize: 13, fontWeight: active ? 700 : 500 }}>{label}</span>
-      {count !== undefined && <span style={{ background: active ? '#fff' : t.blueSoft, color: active ? t.blue : t.blue, borderRadius: 6, padding: '2px 7px', fontSize: 10.5, fontWeight: 700 }}>{count}</span>}
+      {count !== undefined && <span style={{ background: active ? '#fff' : t.blueSoft, color: t.blue, borderRadius: 6, padding: '2px 7px', fontSize: 10.5, fontWeight: 700 }}>{count}</span>}
     </li>
   );
 }
@@ -201,16 +340,15 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
     <div style={{ width: 236, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '20px 16px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0, position: sidebarOpen ? 'fixed' : undefined, left: 0, top: 0, zIndex: 70 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.blue, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Globe size={15} color="#fff" /></div>
-          <div><span className="pa-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text, display: 'block' }}>Easy Class</span><span style={{ fontSize: 10, color: t.subtext }}>Platform control</span></div>
+          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.white, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><img src={esms} alt="ESMS" style={{ width: 24, height: 24 }} /></div>
+          <div><span className="pa-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text, display: 'block' }}>ESMS</span></div>
         </div>
-        {sidebarOpen && <button onClick={() => setSidebarOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.subtext, display: 'flex' }}><X size={18} /></button>}
+        {sidebarOpen && <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.subtext, display: 'flex' }}><X size={18} /></button>}
       </div>
       <div style={{ background: t.panel, borderRadius: 9, padding: 12, display: 'flex', alignItems: 'center', gap: 9, marginBottom: 18 }}>
-        <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${t.blue}` }}><ShieldCheck size={15} color={t.blue} /></div>
+        <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${t.blue}`, flexShrink: 0 }}><ShieldCheck size={15} color={t.blue} /></div>
         <div style={{ minWidth: 0 }}>
           <p className="pa-heading" style={{ margin: 0, fontSize: 12, fontWeight: 700, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{adminEmail || 'Platform Owner'}</p>
-          <p style={{ margin: '2px 0 0', fontSize: 10, color: t.blue, fontWeight: 600 }}>● Super admin</p>
         </div>
       </div>
       <ul className="pa-scroll" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflowY: 'auto' }}>
@@ -218,7 +356,7 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
         <div style={{ height: 1, background: t.border, margin: '7px 3px' }} />
         <NavItem icon={Settings} label="Platform settings" active={section === 'settings'} onClick={() => { go('settings'); setSidebarOpen(false); }} />
       </ul>
-      <button onClick={onSignOut} className="pa-btn" style={{ display: 'grid', gridTemplateColumns: '20px 1fr', alignItems: 'center', gap: 10, marginTop: 8, padding: '9px 11px', borderRadius: 8, background: t.redSoft, color: t.red, border: 'none', cursor: 'pointer' }}><LogOut size={15} /><span style={{ fontSize: 12.5, fontWeight: 700, textAlign: 'left' }}>Sign Out</span></button>
+      <button onClick={onSignOut} className="pa-btn" style={{ display: 'grid', gridTemplateColumns: '20px 1fr', alignItems: 'center', gap: 10, marginTop: 8, padding: '9px 11px', borderRadius: 8, background: t.redSoft, color: t.red, border: 'none', cursor: 'pointer' }}><LogOut size={15} /><span style={{ fontSize: 12.5, fontWeight: 700, textAlign: 'left' }}>Sign out</span></button>
     </div>
   );
 }
@@ -226,12 +364,12 @@ function Header({ setSidebarOpen, title, onRefresh, refreshing }) {
   return (
     <div style={{ height: 60, borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px', gap: 12, background: '#fff', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-        <button onClick={() => setSidebarOpen(true)} className="pa-hamburger" style={{ background: t.panel, border: 'none', borderRadius: 8, width: 34, height: 34, display: 'none', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: t.text }}><Menu size={17} /></button>
+        <button onClick={() => setSidebarOpen(true)} aria-label="Open menu" className="pa-hamburger" style={{ background: t.panel, border: 'none', borderRadius: 8, width: 34, height: 34, display: 'none', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: t.text }}><Menu size={17} /></button>
         <h2 className="pa-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>{title}</h2>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         {onRefresh && (
-          <button type="button" onClick={onRefresh} className="pa-btn" title="Refresh" style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: t.panel, color: t.subtext, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
+          <button type="button" onClick={onRefresh} className="pa-btn" title="Refresh" aria-label="Refresh" style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: t.panel, color: t.subtext, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
             <RefreshCw size={14} style={refreshing ? { animation: 'paSpin 0.8s linear infinite' } : undefined} />
           </button>
         )}
@@ -245,7 +383,7 @@ function PageHead({ eyebrow, text }) { return <div><p style={{ margin: 0, fontSi
 
 /* ---------------------------------- OVERVIEW ---------------------------------- */
 
-function Overview({ schools, go }) {
+function Overview({ schools, go, loading }) {
   const pending = schools.filter(s => s.status === 'pending_review' || s.status === 'pending_payment').length;
   const active = schools.filter(s => s.status === 'active').length;
   const suspended = schools.filter(s => s.status === 'suspended').length;
@@ -263,7 +401,7 @@ function Overview({ schools, go }) {
           <p className="pa-heading" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text }}>Most recently registered</p>
           <button onClick={() => go('schools')} className="pa-btn" style={{ background: 'none', border: 'none', color: t.blue, fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>View all →</button>
         </div>
-        {schools.length === 0 ? (
+        {loading ? <Skeleton h={120} r={8} /> : schools.length === 0 ? (
           <p style={{ fontSize: 12.5, color: t.subtext, margin: 0 }}>No schools have registered yet.</p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -282,35 +420,57 @@ function Overview({ schools, go }) {
 
 /* ---------------------------------- SCHOOLS ---------------------------------- */
 
-function SchoolDetailModal({ school, onClose, onApprove, onSuspend, busy }) {
-  const canApprove = school.status !== 'active';
-  const canSuspend = school.status === 'active';
+function SchoolDetailModal({ school, onClose, busy, actions }) {
+  const isActive = school.status === 'active';
+  const isRejected = school.status === 'rejected';
+  const canApprove = !isActive;
+  const canReject = !isActive && !isRejected;
   return (
-    <Modal onClose={onClose} width={480}>
+    <Modal onClose={onClose} width={500}>
       <div style={{ padding: 22 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
             <h3 className="pa-heading" style={{ margin: 0, fontSize: 17, color: t.text }}>{school.name}</h3>
             <p style={{ margin: '4px 0 0', fontSize: 12, color: t.subtext }}>{school.code} · Registered {fmtDate(school.createdAt)}</p>
           </div>
-          <IconBtn icon={X} onClick={onClose} />
+          <IconBtn icon={X} onClick={onClose} title="Close" />
         </div>
-        <div style={{ margin: '14px 0' }}><StatusBadge status={school.status} /></div>
-        <div style={{ background: t.panel, borderRadius: 8, padding: 13, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 6 }}>
+
+        <div style={{ margin: '14px 0', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <StatusBadge status={school.status} />
+          <PaymentBadge paid={school.paymentStatus} />
+        </div>
+
+        <div style={{ background: t.panel, borderRadius: 8, padding: 13, marginBottom: 14, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <p style={{ margin: 0, fontSize: 11, fontWeight: 700, color: t.subtext }}>SCHOOL CONTACT (verified with Google)</p>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: t.text, display: 'flex', alignItems: 'center', gap: 6 }}><Mail size={12} /> {school.email}</p>
           {school.phone && <p style={{ margin: 0, fontSize: 12, color: t.text, display: 'flex', alignItems: 'center', gap: 6 }}><Phone size={12} /> {school.phone}</p>}
+          {isActive && (
+            <p style={{ margin: 0, fontSize: 12, color: t.subtext, display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Send size={12} /> {school.codeSentAt ? `School code emailed ${fmtDateTime(school.codeSentAt)}` : 'School code has not been emailed yet'}
+            </p>
+          )}
         </div>
-        {school.status === 'pending_payment' && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: t.orangeSoft, borderRadius: 8, padding: 11, marginBottom: 16 }}>
+
+        {!school.paymentStatus && !isActive && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', background: t.orangeSoft, borderRadius: 8, padding: 11, marginBottom: 14 }}>
             <AlertCircle size={14} color={t.orange} style={{ marginTop: 1, flexShrink: 0 }} />
-            <p style={{ margin: 0, fontSize: 11.5, color: t.orange, lineHeight: 1.5 }}>This school hasn't completed the registration fee payment yet. You can still approve it manually if needed.</p>
+            <p style={{ margin: 0, fontSize: 11.5, color: t.orange, lineHeight: 1.5 }}>Registration fee not confirmed. Mark this school as paid once you have received the payment, then approve it.</p>
           </div>
         )}
-        <div style={{ display: 'flex', gap: 8 }}>
-          {canApprove && <Button icon={CheckCircle2} disabled={busy} onClick={() => onApprove(school)} style={{ flex: 1, justifyContent: 'center' }}>{busy ? 'Approving…' : 'Approve school'}</Button>}
-          {canSuspend && <Button variant="redSoft" icon={Ban} disabled={busy} onClick={() => onSuspend(school)} style={{ flex: 1, justifyContent: 'center' }}>{busy ? 'Working…' : 'Suspend school'}</Button>}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Button variant="outline" icon={CreditCard} disabled={busy} onClick={() => actions.onTogglePaid(school)}>
+            {school.paymentStatus ? 'Mark as unpaid' : 'Mark as paid'}
+          </Button>
+          {canApprove && <Button icon={CheckCircle2} disabled={busy || !school.paymentStatus} onClick={() => actions.onApprove(school)}>{busy ? 'Working…' : 'Approve school'}</Button>}
+          {isActive && <Button variant="blue" icon={Mail} disabled={busy} onClick={() => actions.onSendCode(school)}>{school.codeSentAt ? 'Email code again' : 'Email code'}</Button>}
+          {isActive && <Button variant="redSoft" icon={Ban} disabled={busy} onClick={() => actions.onSuspend(school)}>Suspend school</Button>}
+          {canReject && <Button variant="soft" icon={XCircle} disabled={busy} onClick={() => actions.onReject(school)}>Reject</Button>}
         </div>
+
+        <div style={{ height: 1, background: t.border, margin: '18px 0 14px' }} />
+        <Button variant="redSoft" icon={Trash2} disabled={busy} onClick={() => actions.onDelete(school)}>Delete school</Button>
       </div>
     </Modal>
   );
@@ -322,41 +482,40 @@ const STATUS_FILTER_OPTIONS = [
   { value: 'pending_payment', label: 'Pending payment' },
   { value: 'active', label: 'Active' },
   { value: 'suspended', label: 'Suspended' },
+  { value: 'rejected', label: 'Rejected' },
 ];
 
-function SchoolsPage({ schools, loading, error, onView, onApprove, onSuspend, busyId }) {
+function SchoolsPage({ schools, loading, onView, actions, busyId }) {
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const needle = q.toLowerCase();
   const filtered = schools.filter(s =>
     (statusFilter === 'all' || s.status === statusFilter) &&
-    (s.name.toLowerCase().includes(q.toLowerCase()) || s.code.toLowerCase().includes(q.toLowerCase()) || s.email.toLowerCase().includes(q.toLowerCase()))
+    ((s.name || '').toLowerCase().includes(needle) || (s.code || '').toLowerCase().includes(needle) || (s.email || '').toLowerCase().includes(needle))
   );
   return (
     <div className="pa-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <PageHead eyebrow="SCHOOLS" text="Approve newly registered schools so their admin can sign in" />
+      <PageHead eyebrow="SCHOOLS" text="Confirm payment, then approve newly registered schools so their admin can sign in" />
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
         <SearchBox value={q} onChange={setQ} placeholder="Search by name, code, or email…" />
         <Dropdown value={statusFilter} options={STATUS_FILTER_OPTIONS} onChange={setStatusFilter} icon={Filter} />
       </div>
-      {error && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: t.redSoft, borderRadius: 8, padding: '10px 13px', color: t.red, fontSize: 12.5, fontWeight: 600 }}>
-          <AlertCircle size={15} /> {error}
-        </div>
-      )}
       {loading ? <Skeleton h={220} r={10} /> : (
-        <Table columns={['School', 'Code', 'Contact email', 'Status', 'Registered', 'Actions']} rows={filtered}
+        <Table columns={['School', 'Code', 'Contact email', 'Payment', 'Status', 'Registered', 'Actions']} rows={filtered}
           empty={<EmptyState icon={Building2} title={schools.length === 0 ? 'No schools registered yet' : 'No matches'} text={schools.length === 0 ? 'Schools will appear here as soon as someone registers through the site.' : 'Try a different search or status filter.'} />}
           renderRow={(s) => (
             <tr key={s.id} className="pa-row" style={{ cursor: 'pointer' }} onClick={() => onView(s)}>
               <Td style={{ fontWeight: 700 }}>{s.name}</Td>
               <Td style={{ color: t.subtext }}>{s.code}</Td>
               <Td style={{ color: t.subtext }}>{s.email}</Td>
+              <Td><PaymentBadge paid={s.paymentStatus} /></Td>
               <Td><StatusBadge status={s.status} /></Td>
               <Td>{fmtDate(s.createdAt)}</Td>
               <Td onClick={e => e.stopPropagation()}>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {s.status !== 'active' && <IconBtn size={26} icon={CheckCircle2} tone="green" disabled={busyId === s.id} onClick={() => onApprove(s)} title="Approve" />}
-                  {s.status === 'active' && <IconBtn size={26} icon={Ban} tone="red" disabled={busyId === s.id} onClick={() => onSuspend(s)} title="Suspend" />}
+                  <IconBtn size={26} icon={CreditCard} tone={s.paymentStatus ? 'green' : 'orange'} disabled={busyId === s.id} onClick={() => actions.onTogglePaid(s)} title={s.paymentStatus ? 'Mark as unpaid' : 'Mark as paid'} />
+                  {s.status !== 'active' && <IconBtn size={26} icon={CheckCircle2} tone="green" disabled={busyId === s.id || !s.paymentStatus} onClick={() => actions.onApprove(s)} title={s.paymentStatus ? 'Approve' : 'Mark as paid first'} />}
+                  {s.status === 'active' && <IconBtn size={26} icon={Ban} tone="red" disabled={busyId === s.id} onClick={() => actions.onSuspend(s)} title="Suspend" />}
                 </div>
               </Td>
             </tr>
@@ -370,8 +529,9 @@ function SchoolsPage({ schools, loading, error, onView, onApprove, onSuspend, bu
 
 function AdminsPage({ schools, loading }) {
   const [q, setQ] = useState('');
+  const needle = q.toLowerCase();
   const activeSchools = schools.filter(s => s.status === 'active');
-  const filtered = activeSchools.filter(s => s.name.toLowerCase().includes(q.toLowerCase()) || s.email.toLowerCase().includes(q.toLowerCase()));
+  const filtered = activeSchools.filter(s => (s.name || '').toLowerCase().includes(needle) || (s.email || '').toLowerCase().includes(needle));
   return (
     <div className="pa-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <PageHead eyebrow="SCHOOL ADMINS" text="Each active school's admin is whoever verified its email with Google at registration" />
@@ -399,11 +559,12 @@ function AnnouncementComposer({ schools, onCancel, onSave }) {
   const [body, setBody] = useState('');
   const [audience, setAudience] = useState(['All schools']);
   const toggle = (s) => setAudience(a => { if (s === 'All schools') return ['All schools']; const next = a.filter(x => x !== 'All schools'); return next.includes(s) ? next.filter(x => x !== s) : [...next, s]; });
+  const canSave = title.trim() && body.trim() && audience.length > 0;
   return (
     <Modal onClose={onCancel} width={500}>
       <div style={{ padding: 22 }}>
         <h3 className="pa-heading" style={{ margin: '0 0 4px', fontSize: 15.5, color: t.text }}>New platform announcement</h3>
-        <p style={{ margin: '0 0 16px', fontSize: 11.5, color: t.subtext }}>Not wired to a backend yet — this is stored locally in your browser for now.</p>
+        <p style={{ margin: '0 0 16px', fontSize: 11.5, color: t.subtext }}>Not sent to schools yet. Announcements are saved only in this browser.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <Field label="Title"><Input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Scheduled maintenance this weekend" /></Field>
           <Field label="Message"><textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="Write your announcement…" style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: 10, fontSize: 13, color: t.text, background: t.panel, outline: 'none', resize: 'vertical' }} /></Field>
@@ -415,7 +576,7 @@ function AnnouncementComposer({ schools, onCancel, onSave }) {
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
           <Button variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button variant="blue" icon={Send} disabled={!title || !body} onClick={() => onSave({ id: uid(), title, body, audience, postedAt: new Date().toISOString() })}>Broadcast</Button>
+          <Button variant="blue" icon={Send} disabled={!canSave} onClick={() => onSave({ id: uid(), title: title.trim(), body: body.trim(), audience, postedAt: new Date().toISOString() })}>Save announcement</Button>
         </div>
       </div>
     </Modal>
@@ -426,7 +587,7 @@ function AnnouncementsPage({ announcements, loading, onNew, onDelete }) {
   return (
     <div className="pa-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-        <PageHead eyebrow="ANNOUNCEMENTS" text="Local only for now — not yet sent to schools by a backend" />
+        <PageHead eyebrow="ANNOUNCEMENTS" text="Saved in this browser only. Not yet sent to schools by a backend" />
         <Button variant="blue" icon={Megaphone} onClick={onNew}>New announcement</Button>
       </div>
       {loading ? <Skeleton h={160} r={10} /> : announcements.length === 0 ? (
@@ -451,12 +612,12 @@ function AnnouncementsPage({ announcements, loading, onNew, onDelete }) {
 
 /* ---------------------------------- ACTIVITY LOG ---------------------------------- */
 
-function ActivityPage({ log, loading }) {
+function ActivityPage({ log }) {
   return (
     <div className="pa-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <PageHead eyebrow="ACTIVITY LOG" text="Actions you've taken this session (approvals, suspensions)" />
-      {loading ? <Skeleton h={220} r={10} /> : log.length === 0 ? (
-        <EmptyState icon={Activity} title="Nothing recorded yet" text="Approving or suspending a school will show up here." />
+      <PageHead eyebrow="ACTIVITY LOG" text="Actions you've taken this session" />
+      {log.length === 0 ? (
+        <EmptyState icon={Activity} title="Nothing recorded yet" text="Approving, suspending, or updating a school will show up here." />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: '8px 16px' }}>
           {log.map((e, i) => (
@@ -476,14 +637,18 @@ function ActivityPage({ log, loading }) {
 
 /* ---------------------------------- SETTINGS ---------------------------------- */
 
-function SettingsPage() {
+function SettingsPage({ adminEmail }) {
   return (
     <div className="pa-page-pad" style={{ padding: 22, maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <PageHead eyebrow="PLATFORM SETTINGS" text="Global defaults applied across every school" />
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p className="pa-heading" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text, display: 'flex', alignItems: 'center', gap: 7 }}><ShieldCheck size={15} color={t.blue} /> Super admin account</p>
+        <p style={{ margin: 0, fontSize: 12, color: t.subtext, lineHeight: 1.6 }}>Signed in as <b style={{ color: t.text }}>{adminEmail}</b>. To change the owner account, update <code>SUPERADMIN_EMAIL</code> in the server's .env file and restart the server.</p>
+      </div>
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Field label="Platform name"><Input defaultValue="Easy Class" /></Field>
         <Field label="Support email"><Input defaultValue="support@easyclass.app" /></Field>
-        <p style={{ margin: 0, fontSize: 11, color: t.subtext }}>Not wired to a backend yet — changes here aren't saved.</p>
+        <p style={{ margin: 0, fontSize: 11, color: t.subtext }}>Not wired to a backend yet. Changes here aren't saved.</p>
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}><Button variant="blue" icon={Save} disabled>Save changes</Button></div>
       </div>
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -499,124 +664,185 @@ function SettingsPage() {
 export default function SuperAdminDashboard() {
   const navigate = useNavigate();
 
-  // Default fallback mock session to allow viewing without signing in
-  const [session, setSession] = useState(() => {
-    try {
-      const raw = localStorage.getItem(SUPERADMIN_SESSION_KEY);
-      const parsed = raw ? JSON.parse(raw) : null;
-      return parsed?.token ? parsed : { token: 'guest_dev_mode', email: 'dev.guest@easyclass.app' };
-    } catch {
-      return { token: 'guest_dev_mode', email: 'dev.guest@easyclass.app' };
-    }
-  });
+  const [session, setSession] = useState(readSession);
+  const [loginNotice, setLoginNotice] = useState('');
 
   const [section, setSection] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const go = (dest) => setSection(dest);
+  const [flash, setFlash] = useState(null);
+  const go = (dest) => { setSection(dest); setFlash(null); };
 
   const [schools, setSchools] = useState([]);
-  const [schoolsLoading, setSchoolsLoading] = useState(false);
-  const [schoolsError, setSchoolsError] = useState('');
+  const [schoolsLoading, setSchoolsLoading] = useState(() => !!readSession());
   const [busyId, setBusyId] = useState(null);
 
-  const [announcements, setAnnouncements] = useState([]);
+  const [announcements, setAnnouncements] = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem(ANNOUNCEMENTS_KEY)); return Array.isArray(v) ? v : []; } catch { return []; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(ANNOUNCEMENTS_KEY, JSON.stringify(announcements)); } catch { /* storage unavailable */ }
+  }, [announcements]);
+
   const [log, setLog] = useState([]);
   const pushLog = (text) => setLog(l => [{ id: uid(), text, at: new Date().toISOString() }, ...l]);
 
   const [schoolDetail, setSchoolDetail] = useState(null);
   const [announcementModal, setAnnouncementModal] = useState(false);
 
-  const authHeader = () => (session?.token ? { Authorization: `Bearer ${session.token}` } : {});
+  /* ---- session ---- */
 
-  const mapSchool = (raw) => ({
-    id: raw.id,
-    name: raw.name,
-    email: raw.email,
-    phone: raw.phone,
-    code: raw.school_code,
-    status: raw.status,
-    createdAt: raw.created_at,
-  });
+  function handleLogin(newSession) {
+    try { localStorage.setItem(SUPERADMIN_SESSION_KEY, JSON.stringify(newSession)); } catch { /* storage unavailable */ }
+    setLoginNotice('');
+    setFlash(null);
+    setSchoolsLoading(true);
+    setSession(newSession);
+  }
+
+  function endSession(notice = '') {
+    try { localStorage.removeItem(SUPERADMIN_SESSION_KEY); } catch { /* storage unavailable */ }
+    window.google?.accounts?.id?.disableAutoSelect?.();
+    setSession(null);
+    setSchools([]);
+    setSchoolDetail(null);
+    setSection('overview');
+    setLoginNotice(notice);
+  }
+
+  /* ---- API helper: sends the token, handles expiry, returns parsed JSON or throws ---- */
+
+  async function api(path, { method = 'GET', body } = {}) {
+    let res;
+    try {
+      res = await fetch(`${API_BASE}/api/superadmin${path}`, {
+        method,
+        headers: {
+          ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch {
+      throw new Error('Could not reach the server. Please check your connection.');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) {
+      endSession(data.message || 'Your session expired. Please sign in again.');
+      throw new Error(data.message || 'Your session expired.');
+    }
+    if (!res.ok || !data.success) throw new Error(data.message || data.error || 'Something went wrong.');
+    return data;
+  }
+
+  /* ---- schools ---- */
 
   async function fetchSchools() {
     if (!session?.token) return;
     setSchoolsLoading(true);
-    setSchoolsError('');
     try {
-      const res = await fetch(`${API_BASE}/api/superadmin/schools`, { headers: authHeader() });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSchools(data.schools.map(mapSchool));
-      } else {
-        setSchoolsError(data.message || 'Could not load schools.');
-      }
+      const data = await api('/schools');
+      setSchools(data.schools.map(mapSchool));
     } catch (err) {
-      console.error(err);
-      setSchoolsError('Could not reach the server. Please check your connection.');
+      setFlash({ type: 'error', text: err.message });
     } finally {
       setSchoolsLoading(false);
     }
   }
 
   useEffect(() => {
-    if (session?.token && session.token !== 'guest_dev_mode') {
-      fetchSchools();
-    }
-  }, [session]);
+    if (session?.token) fetchSchools();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token]);
 
-  async function handleApprove(school) {
+  function applyUpdate(raw) {
+    const s = mapSchool(raw);
+    setSchools(list => list.map(x => (x.id === s.id ? s : x)));
+    setSchoolDetail(d => (d && d.id === s.id ? s : d));
+    return s;
+  }
+
+  async function run(school, work) {
     setBusyId(school.id);
+    setFlash(null);
     try {
-      const res = await fetch(`${API_BASE}/api/superadmin/schools/${school.id}/approve`, {
-        method: 'POST',
-        headers: authHeader(),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSchools(list => list.map(s => s.id === school.id ? { ...s, status: 'active' } : s));
-        pushLog(`Approved "${school.name}".`);
-        setSchoolDetail(d => d && d.id === school.id ? { ...d, status: 'active' } : d);
-      } else {
-        setSchoolsError(data.message || 'Could not approve that school.');
-      }
+      await work();
     } catch (err) {
-      console.error(err);
-      setSchoolsError('Could not reach the server. Please check your connection.');
+      setFlash({ type: 'error', text: err.message });
     } finally {
       setBusyId(null);
     }
   }
 
-  async function handleSuspend(school) {
-    setBusyId(school.id);
-    try {
-      const res = await fetch(`${API_BASE}/api/superadmin/schools/${school.id}/reject`, {
-        method: 'POST',
-        headers: authHeader(),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setSchools(list => list.map(s => s.id === school.id ? { ...s, status: 'suspended' } : s));
+  const actions = {
+    onTogglePaid: (school) => run(school, async () => {
+      const paid = !school.paymentStatus;
+      const data = await api(`/schools/${school.id}/payment`, { method: 'PATCH', body: { paid } });
+      applyUpdate(data.school);
+      pushLog(`Marked "${school.name}" as ${paid ? 'paid' : 'unpaid'}.`);
+    }),
+
+    onApprove: (school) => run(school, async () => {
+      if (!school.paymentStatus) throw new Error('Mark this school as paid before approving it.');
+      const data = await api(`/schools/${school.id}/approve`, { method: 'POST' });
+      applyUpdate(data.school);
+      pushLog(`Approved "${school.name}".`);
+      if (data.emailSent) {
+        setFlash({ type: 'success', text: `"${school.name}" is approved and its school code was emailed to ${school.email}.` });
+      } else if (data.emailError) {
+        setFlash({ type: 'warn', text: `"${school.name}" is approved, but the code email failed: ${data.emailError} Open the school and press "Email code" to try again.` });
+      } else {
+        setFlash({ type: 'success', text: `"${school.name}" is approved.` });
+      }
+    }),
+
+    onSuspend: (school) => {
+      if (!window.confirm(`Suspend "${school.name}"?`)) return;
+      return run(school, async () => {
+        const data = await api(`/schools/${school.id}/suspend`, { method: 'POST' });
+        applyUpdate(data.school);
         pushLog(`Suspended "${school.name}".`);
-        setSchoolDetail(d => d && d.id === school.id ? { ...d, status: 'suspended' } : d);
-      } else {
-        setSchoolsError(data.message || 'Could not suspend that school.');
-      }
-    } catch (err) {
-      console.error(err);
-      setSchoolsError('Could not reach the server. Please check your connection.');
-    } finally {
-      setBusyId(null);
-    }
+      });
+    },
+
+    onReject: (school) => {
+      if (!window.confirm(`Reject the registration for "${school.name}"?`)) return;
+      return run(school, async () => {
+        const data = await api(`/schools/${school.id}/reject`, { method: 'POST' });
+        applyUpdate(data.school);
+        pushLog(`Rejected "${school.name}".`);
+      });
+    },
+
+    onSendCode: (school) => run(school, async () => {
+      const data = await api(`/schools/${school.id}/send-code`, { method: 'POST' });
+      applyUpdate(data.school);
+      pushLog(`Emailed the school code to "${school.name}".`);
+      setFlash({ type: 'success', text: `School code emailed to ${school.email}.` });
+    }),
+
+    onDelete: (school) => {
+      if (!window.confirm(`Permanently delete "${school.name}" and everything under it? This cannot be undone.`)) return;
+      return run(school, async () => {
+        await api(`/schools/${school.id}`, { method: 'DELETE' });
+        setSchools(list => list.filter(x => x.id !== school.id));
+        setSchoolDetail(null);
+        pushLog(`Deleted "${school.name}".`);
+      });
+    },
+  };
+
+  /* ---- render ---- */
+
+  if (!session?.token) {
+    return (
+      <div className="pa-root" style={{ minHeight: '100vh', color: t.text }}>
+        <GlobalStyle />
+        <LoginScreen onSuccess={handleLogin} notice={loginNotice} onBack={() => navigate('/')} />
+      </div>
+    );
   }
 
-  function handleSignOut() {
-    localStorage.removeItem(SUPERADMIN_SESSION_KEY);
-    navigate('/', { replace: true });
-  }
-
-  const activeAdminCount = schools.filter(s => s.status === 'active').length;
-  const counts = { schools: schools.length, admins: activeAdminCount };
+  const counts = { schools: schools.length, admins: schools.filter(s => s.status === 'active').length };
   const titles = { overview: 'Overview', schools: 'Schools', admins: 'School Admins', announcements: 'Announcements', activity: 'Activity log', settings: 'Platform settings' };
 
   return (
@@ -624,35 +850,34 @@ export default function SuperAdminDashboard() {
       <GlobalStyle />
       <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
         <div className="pa-sidebar-wrap" style={{ display: 'flex' }}>
-          <Sidebar section={section} go={go} counts={counts} sidebarOpen={false} setSidebarOpen={() => {}} adminEmail={session?.email} onSignOut={handleSignOut} />
+          <Sidebar section={section} go={go} counts={counts} sidebarOpen={false} setSidebarOpen={() => {}} adminEmail={session.email} onSignOut={() => endSession()} />
         </div>
         {sidebarOpen && (
           <div style={{ position: 'fixed', inset: 0, zIndex: 60 }}>
             <div onClick={() => setSidebarOpen(false)} style={{ position: 'absolute', inset: 0, background: 'rgba(15,23,42,0.45)' }} />
-            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0 }}><Sidebar section={section} go={go} counts={counts} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} adminEmail={session?.email} onSignOut={handleSignOut} /></div>
+            <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0 }}><Sidebar section={section} go={go} counts={counts} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} adminEmail={session.email} onSignOut={() => endSession()} /></div>
           </div>
         )}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <Header setSidebarOpen={setSidebarOpen} title={titles[section]} onRefresh={fetchSchools} refreshing={schoolsLoading} />
           <div className="pa-scroll" style={{ flex: 1, overflowY: 'auto' }}>
-            {section === 'overview' && <Overview schools={schools} go={go} />}
+            {flash && <div className="pa-page-pad" style={{ padding: '16px 22px 0' }}><Flash flash={flash} onClose={() => setFlash(null)} /></div>}
+            {section === 'overview' && <Overview schools={schools} go={go} loading={schoolsLoading} />}
             {section === 'schools' && (
-              <SchoolsPage schools={schools} loading={schoolsLoading} error={schoolsError} busyId={busyId}
-                onView={setSchoolDetail} onApprove={handleApprove} onSuspend={handleSuspend} />
+              <SchoolsPage schools={schools} loading={schoolsLoading} busyId={busyId} onView={setSchoolDetail} actions={actions} />
             )}
             {section === 'admins' && <AdminsPage schools={schools} loading={schoolsLoading} />}
             {section === 'announcements' && <AnnouncementsPage announcements={announcements} loading={false} onNew={() => setAnnouncementModal(true)} onDelete={(a) => setAnnouncements(list => list.filter(x => x.id !== a.id))} />}
-            {section === 'activity' && <ActivityPage log={log} loading={false} />}
-            {section === 'settings' && <SettingsPage />}
+            {section === 'activity' && <ActivityPage log={log} />}
+            {section === 'settings' && <SettingsPage adminEmail={session.email} />}
           </div>
         </div>
       </div>
 
       {schoolDetail && (
-        <SchoolDetailModal school={schoolDetail} onClose={() => setSchoolDetail(null)} busy={busyId === schoolDetail.id}
-          onApprove={handleApprove} onSuspend={handleSuspend} />
+        <SchoolDetailModal school={schoolDetail} onClose={() => setSchoolDetail(null)} busy={busyId === schoolDetail.id} actions={actions} />
       )}
-      {announcementModal && <AnnouncementComposer schools={schools} onCancel={() => setAnnouncementModal(false)} onSave={(a) => { setAnnouncements(list => [a, ...list]); pushLog(`Drafted announcement "${a.title}" (local only).`); setAnnouncementModal(false); }} />}
+      {announcementModal && <AnnouncementComposer schools={schools} onCancel={() => setAnnouncementModal(false)} onSave={(a) => { setAnnouncements(list => [a, ...list]); pushLog(`Saved announcement "${a.title}" (local only).`); setAnnouncementModal(false); }} />}
     </div>
   );
 }

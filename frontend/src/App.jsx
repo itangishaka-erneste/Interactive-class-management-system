@@ -4,6 +4,11 @@ import Register from "./register.jsx";
 import Teacher from "./teacher.jsx";
 import SchoolAdmin from "./school_admin.jsx";
 import Student from "./student.jsx";
+
+// The super admin page is STANDALONE. It has its own Google sign-in and its own
+// "Continue to dashboard" button, and it does not use Home, Register or any
+// other page. Save the file I gave you as  src/SuperAdminDashboard.jsx  and
+// delete (or stop importing) the old  src/super_admin.jsx.
 import SuperAdmin from "./super_admin.jsx";
 
 function AppRoutes() {
@@ -27,46 +32,27 @@ function AppRoutes() {
           <Register
             onBackHome={() => navigate("/")}
             onLogin={(role) => {
+              // Super admin no longer signs in through Register.
               if (role === "student") navigate("/student");
               else if (role === "school_admin") navigate("/school_admin");
-              else if (role === "super_admin") navigate("/superadmin");
               else navigate("/teacher");
             }}
           />
         }
       />
 
-      <Route
-        path="/teacher"
-        element={<Teacher onSignOut={() => navigate("/")} />}
-      />
+      <Route path="/teacher" element={<Teacher onSignOut={() => navigate("/")} />} />
+      <Route path="/student" element={<Student onSignOut={() => navigate("/")} />} />
 
-      <Route
-        path="/student"
-        element={<Student onSignOut={() => navigate("/")} />}
-      />
+      {/* School Admin */}
+      <Route path="/school_admin" element={<SchoolAdmin onSignOut={() => navigate("/")} />} />
+      <Route path="/sadmin" element={<SchoolAdmin onSignOut={() => navigate("/")} />} />
 
-      {/* School Admin Routes */}
-      <Route
-        path="/school_admin"
-        element={<SchoolAdmin onSignOut={() => navigate("/")} />}
-      />
-      <Route
-        path="/sadmin"
-        element={<SchoolAdmin onSignOut={() => navigate("/")} />}
-      />
+      {/* Super Admin: independent page, no props, no redirects */}
+      <Route path="/superadmin/*" element={<SuperAdmin />} />
+      <Route path="/super_admin/*" element={<SuperAdmin />} />
 
-      {/* Super Admin Control Panel Routes */}
-      <Route
-        path="/superadmin"
-        element={<SuperAdmin onSignOut={() => navigate("/")} />}
-      />
-      <Route
-        path="/super_admin"
-        element={<SuperAdmin onSignOut={() => navigate("/")} />}
-      />
-
-      {/* Fallback Redirect */}
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
