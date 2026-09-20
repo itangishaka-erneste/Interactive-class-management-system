@@ -4,51 +4,35 @@ import Register from "./register.jsx";
 import Teacher from "./teacher.jsx";
 import SchoolAdmin from "./school_admin.jsx";
 import Student from "./student.jsx";
-
-// The super admin page is STANDALONE. It has its own Google sign-in and its own
-// "Continue to dashboard" button, and it does not use Home, Register or any
-// other page. Save the file I gave you as  src/SuperAdminDashboard.jsx  and
-// delete (or stop importing) the old  src/super_admin.jsx.
 import SuperAdmin from "./super_admin.jsx";
 
 function AppRoutes() {
   const navigate = useNavigate();
+  const signOut = () => navigate("/");
 
   return (
     <Routes>
-      <Route
-        path="/"
-        element={
-          <Home
-            onGetStarted={() => navigate("/register")}
-            onLogin={() => navigate("/register")}
-          />
-        }
-      />
+      {/* Home handles its own navigation (it uses useNavigate internally). */}
+      <Route path="/" element={<Home />} />
 
+      {/* "Log in" on the register page goes back to Home, where the sign-in cards are. */}
       <Route
         path="/register"
-        element={
-          <Register
-            onBackHome={() => navigate("/")}
-            onLogin={(role) => {
-              // Super admin no longer signs in through Register.
-              if (role === "student") navigate("/student");
-              else if (role === "school_admin") navigate("/school_admin");
-              else navigate("/teacher");
-            }}
-          />
-        }
+        element={<Register onBackHome={() => navigate("/")} onLogin={() => navigate("/")} />}
       />
 
-      <Route path="/teacher" element={<Teacher onSignOut={() => navigate("/")} />} />
-      <Route path="/student" element={<Student onSignOut={() => navigate("/")} />} />
+      {/* Home sends people to /dashboard/<role> after Google sign-in.
+          These routes were missing, so every sign-in bounced back to "/". */}
+      <Route path="/dashboard/student" element={<Student onSignOut={signOut} />} />
+      <Route path="/dashboard/teacher" element={<Teacher onSignOut={signOut} />} />
+      <Route path="/dashboard/schoolAdmin" element={<SchoolAdmin onSignOut={signOut} />} />
+      <Route path="/dashboard/superAdmin" element={<SuperAdmin />} />
 
-      {/* School Admin */}
-      <Route path="/school_admin" element={<SchoolAdmin onSignOut={() => navigate("/")} />} />
-      <Route path="/sadmin" element={<SchoolAdmin onSignOut={() => navigate("/")} />} />
-
-      {/* Super Admin: independent page, no props, no redirects */}
+      {/* Shorter direct URLs (kept so old links still work). */}
+      <Route path="/student" element={<Student onSignOut={signOut} />} />
+      <Route path="/teacher" element={<Teacher onSignOut={signOut} />} />
+      <Route path="/school_admin" element={<SchoolAdmin onSignOut={signOut} />} />
+      <Route path="/sadmin" element={<SchoolAdmin onSignOut={signOut} />} />
       <Route path="/superadmin/*" element={<SuperAdmin />} />
       <Route path="/super_admin/*" element={<SuperAdmin />} />
 

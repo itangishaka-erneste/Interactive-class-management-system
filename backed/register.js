@@ -3,13 +3,16 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const pool = require("./db");
+// Spelling must match the real file name AND the require in server.js exactly
+// (Superadmin.js). A different capital letter loads the file a second time on
+// Windows/macOS and breaks live updates; on Render/Linux it crashes the server.
 const {
   serializeSchool,
   verifyGoogleCredential,
   signToken,
   broadcast,
   STATUS,
-} = require("./superadmin");
+} = require("./Superadmin");
 
 const router = express.Router();
 
@@ -54,8 +57,11 @@ async function generateUniqueSchoolCode(client) {
 
 const ALLOWED_LOGO_TYPES = { png: "png", jpeg: "jpg", jpg: "jpg", webp: "webp", gif: "gif" };
 
+// Writes an uploaded logo to disk and returns its public path.
+// Returns { logoUrl, savedFile } so the file can be deleted again if the
+// database insert fails afterwards (no orphan files).
 function saveLogo(logoInput) {
-  if (!logoInput) return null;
+  if (!logoInput) return { logoUrl: null, savedFile: null };
 
   if (logoInput.startsWith("data:")) {
     const match = /^data:image\/(png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=]+)$/.exec(logoInput);
@@ -71,8 +77,9 @@ function saveLogo(logoInput) {
     }
 
     const filename = `${crypto.randomUUID()}.${ext}`;
-    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buffer);
-    return `/uploads/logos/${filename}`;
+    const fullPath = path.join(UPLOAD_DIR, filename);
+    fs.writeFileSync(fullPath, buffer);
+    return { logoUrl: `/uploads/logos/${filename}`, savedFile: fullPath };
   }
 
   try {
@@ -82,7 +89,7 @@ function saveLogo(logoInput) {
     throw httpError(400, "Logo link is not a valid URL.");
   }
 
-  return logoInput;
+  return { logoUrl: logoInput, savedFile: null };
 }
 
 /* --------------------------------- tiny rate limit -------------------------- */
@@ -130,14 +137,23 @@ router.post("/register", async (req, res) => {
     return res.status(400).json({ success: false, error: "Google verification is required." });
   }
 
-  const client = await pool.connect();
+  let client;
+  let savedFile = null;
+  let committed = false;
+
   try {
+    // Verify with Google BEFORE taking a database connection, so a slow Google
+    // call can never hold a connection from the pool.
     const google = await verifyGoogleCredential(googleCredential);
     const normalizedPhone = normalizeRwandaPhone(phone);
 
+    client = await pool.connect();
     await client.query("BEGIN");
 
-    const existingSchool = await client.query("SELECT id, status FROM schools WHERE email = $1", [google.email]);
+    const existingSchool = await client.query(
+      "SELECT id, status FROM schools WHERE LOWER(email) = LOWER($1)",
+      [google.email]
+    );
     if (existingSchool.rowCount > 0) {
       await client.query("ROLLBACK");
       const waiting = existingSchool.rows[0].status === STATUS.PENDING;
@@ -149,14 +165,15 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const logoUrl = saveLogo(logo);
+    const logoResult = saveLogo(logo);
+    savedFile = logoResult.savedFile;
     const schoolCode = await generateUniqueSchoolCode(client);
 
     const schoolResult = await client.query(
       `INSERT INTO schools (name, email, phone, logo_url, school_code, status, payment_status)
        VALUES ($1, $2, $3, $4, $5, $6, false)
        RETURNING *`,
-      [schoolName.trim(), google.email, normalizedPhone, logoUrl, schoolCode, STATUS.PENDING]
+      [schoolName.trim(), google.email, normalizedPhone, logoResult.logoUrl, schoolCode, STATUS.PENDING]
     );
     const school = schoolResult.rows[0];
 
@@ -170,9 +187,17 @@ router.post("/register", async (req, res) => {
     );
 
     await client.query("COMMIT");
+    committed = true;
 
     // Live update for the super admin dashboard (no refresh needed there).
-    broadcast("school:registered", serializeSchool(school));
+    // Wrapped so a realtime problem can never turn a saved registration into
+    // an error for the school.
+    try {
+      broadcast("school:registered", serializeSchool(school));
+      console.log(`[register] "${school.name}" saved and broadcast to the super admin dashboard.`);
+    } catch (err) {
+      console.error("[register] Saved, but the live update failed:", err.message);
+    }
 
     return res.status(201).json({
       success: true,
@@ -180,12 +205,15 @@ router.post("/register", async (req, res) => {
       message: "Registration received. Our team will call you and email your school code once approved.",
     });
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
+    if (client) await client.query("ROLLBACK").catch(() => {});
+    // Nothing was saved, so don't leave the uploaded logo behind.
+    if (!committed && savedFile) fs.unlink(savedFile, () => {});
+
     const status = err.status || 500;
     if (status === 500) console.error("[register] Unexpected error:", err);
     return res.status(status).json({ success: false, error: err.message || "Registration failed." });
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
@@ -287,12 +315,3 @@ router.post(
 );
 
 module.exports = router;
-
-/* ============================================================================
-   HOW TO MOUNT (index.js) — see the notes in the chat for the full snippet:
-
-     const { router: superAdminRoute, setupSocket } = require("./superadmin");
-     app.use("/api/schools", require("./register"));
-     app.use("/api/superadmin", superAdminRoute);
-     app.use("/uploads", express.static(__dirname + "/uploads"));
-   ============================================================================ */

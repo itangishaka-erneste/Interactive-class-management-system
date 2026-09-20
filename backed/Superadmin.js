@@ -12,19 +12,38 @@ const router = express.Router();
    CONFIG  (all of this comes from your .env)
 
      GOOGLE_CLIENT_ID   your Google OAuth client id
-     JWT_SECRET        any long random string
+     JWT_SECRET         any long random string
      SUPERADMIN_EMAIL   the ONE Google account allowed to be super admin
      APP_URL            your frontend URL (shown in the emailed instructions)
 
-   Email (pick ONE):
-     RESEND_API_KEY + MAIL_FROM                          -> sends over HTTPS (works on Render)
-     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM  -> sends through SMTP
+   EMAIL - set ONE of these (they are tried in this order):
+
+     1) Resend  (HTTPS, works on Render)
+          RESEND_API_KEY=re_xxx
+          MAIL_FROM="Easy ClassWork <noreply@yourdomain.com>"
+        NOTE: MAIL_FROM must be on a domain you verified in Resend.
+        Without a verified domain Resend only delivers to your own account
+        email, so approvals to other schools will fail.
+
+     2) Brevo   (HTTPS, works on Render, no domain needed - verify ONE sender
+        email inside Brevo)
+          BREVO_API_KEY=xkeysib-xxx
+          MAIL_FROM="Easy ClassWork <the-email-you-verified-in-brevo@gmail.com>"
+
+     3) SMTP    (Gmail etc.)  -> DOES NOT WORK on Render free web services,
+        because outbound SMTP ports (25/465/587) are blocked there. It works
+        on your own computer and on hosts that allow SMTP.
+          SMTP_HOST=smtp.gmail.com
+          SMTP_PORT=587
+          SMTP_USER=you@gmail.com
+          SMTP_PASS=your-16-letter-gmail-app-password
+          MAIL_FROM="Easy ClassWork <you@gmail.com>"
    ============================================================================ */
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
 
-// Create reusable Nodemailer transporter instance if SMTP credentials exist
+// Reusable SMTP transporter (only created when SMTP settings exist).
 let smtpTransporter = null;
 if (process.env.SMTP_HOST || process.env.SMTP_USER) {
   const host = process.env.SMTP_HOST || "smtp.gmail.com";
@@ -33,23 +52,15 @@ if (process.env.SMTP_HOST || process.env.SMTP_USER) {
   smtpTransporter = nodemailer.createTransport({
     host,
     port,
-    secure: port === 465, // true only for 465, false for 587
+    secure: port === 465, // true only for 465, false for 587 (STARTTLS)
     auth: process.env.SMTP_USER
       ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
       : undefined,
-    tls: {
-      rejectUnauthorized: false, // Prevents local network/firewall handshake blocks
-    },
-    pool: true, // Reuse connections for speed and efficiency
+    // Fail fast instead of hanging for 2 minutes when the port is blocked.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
-}
-
-function getSuperAdminEmail() {
-  const email = (process.env.SUPERADMIN_EMAIL || "").trim().toLowerCase();
-  if (!email) {
-    throw httpError(500, "Server is missing SUPERADMIN_EMAIL in its .env file.");
-  }
-  return email;
 }
 
 if (!process.env.SUPERADMIN_EMAIL) {
@@ -68,6 +79,14 @@ const STATUS = {
 /* ------------------------------- small helpers ------------------------------ */
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
+
+function getSuperAdminEmail() {
+  const email = (process.env.SUPERADMIN_EMAIL || "").trim().toLowerCase();
+  if (!email) {
+    throw httpError(500, "Server is missing SUPERADMIN_EMAIL in its .env file.");
+  }
+  return email;
+}
 
 function getSecret() {
   if (!process.env.JWT_SECRET) {
@@ -96,11 +115,14 @@ async function verifyGoogleCredential(credential) {
 
   let ticket;
   try {
-    ticket = await oauthClient.verifyIdToken({
-      idToken: credential,
-      audience: GOOGLE_CLIENT_ID,
-    });
-  } catch {
+    ticket = await Promise.race([
+      oauthClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Google verification timed out")), 15000)
+      ),
+    ]);
+  } catch (err) {
+    console.error("[superadmin] Google verification failed:", err.message);
     throw httpError(401, "Google verification failed. Please choose your account again.");
   }
 
@@ -112,6 +134,7 @@ async function verifyGoogleCredential(credential) {
 }
 
 function serializeSchool(r) {
+  const logo = r.logo_url || null;
   return {
     id: r.id,
     name: r.name,
@@ -120,7 +143,8 @@ function serializeSchool(r) {
     code: r.school_code,
     status: r.status,
     paymentStatus: !!r.payment_status,
-    logoUrl: r.logo_url,
+    // A base64 logo can be huge; don't push it through every list/socket event.
+    logoUrl: logo && !String(logo).startsWith("data:") ? logo : null,
     createdAt: r.created_at,
     codeSentAt: r.code_sent_at || null,
   };
@@ -139,12 +163,45 @@ const wrap = (fn) => async (req, res) => {
   }
 };
 
+/* ------------------------------ database safety ------------------------------ */
+
+// The email feature needs the code_sent_at column. We only ALTER the table when
+// the column is really missing, and we give up after 5 seconds if the table is
+// locked. (A waiting ALTER TABLE makes every other query on "schools" queue
+// behind it, which looks like registration / sign-in / sending "never ends".)
+(async () => {
+  let client;
+  try {
+    client = await pool.connect();
+    const has = await client.query(
+      "SELECT 1 FROM information_schema.columns WHERE table_name = 'schools' AND column_name = 'code_sent_at' LIMIT 1"
+    );
+    if (has.rowCount === 0) {
+      await client.query("SET lock_timeout = '5s'");
+      await client.query("ALTER TABLE schools ADD COLUMN code_sent_at TIMESTAMPTZ");
+      console.log("[superadmin] Added missing column schools.code_sent_at");
+    }
+  } catch (err) {
+    console.error("[superadmin] Could not ensure code_sent_at column:", err.message);
+  } finally {
+    if (client) {
+      try { await client.query("RESET lock_timeout"); } catch { /* ignore */ }
+      client.release();
+    }
+  }
+})();
+
 /* ---------------------------------- realtime --------------------------------- */
 
-let ns = null;
+// Kept on globalThis so realtime still works even if this file gets loaded twice
+// (that happens when one file requires "./superadmin" and another "./Superadmin":
+// on Windows/macOS the two spellings are treated as two different modules).
+const NS_KEY = "__ecwSuperadminNamespace";
 
+// Call this ONCE from your server entry file with the socket.io Server.
 function setupSocket(io) {
-  ns = io.of("/superadmin");
+  const ns = io.of("/superadmin");
+  globalThis[NS_KEY] = ns;
 
   ns.use((socket, next) => {
     try {
@@ -158,14 +215,18 @@ function setupSocket(io) {
   });
 
   ns.on("connection", (socket) => {
+    console.log(`[superadmin] realtime connected: ${socket.data.admin.email}`);
     socket.emit("ready", { email: socket.data.admin.email });
   });
 
   return ns;
 }
 
+// Used by other routes too, e.g. broadcast("school:registered", serializeSchool(row)).
 function broadcast(event, payload) {
+  const ns = globalThis[NS_KEY];
   if (ns) ns.emit(event, payload);
+  else console.warn(`[superadmin] broadcast("${event}") skipped: setupSocket(io) was never called.`);
 }
 
 /* ----------------------------------- email ----------------------------------- */
@@ -176,39 +237,127 @@ const escapeHtml = (s) =>
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
 
-async function sendEmail({ to, subject, text, html }) {
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER || process.env.SUPERADMIN_EMAIL;
-  if (!from) {
-    throw new Error("Email is not configured. Set MAIL_FROM or SMTP_USER in the server .env.");
-  }
+// "Name <a@b.com>"  ->  { name, email }
+function parseAddress(from) {
+  const m = /^\s*(.*?)\s*<([^>]+)>\s*$/.exec(from || "");
+  if (m) return { name: m[1].replace(/^"|"$/g, "").trim() || "Easy ClassWork Records", email: m[2].trim() };
+  return { name: "Easy ClassWork Records", email: String(from || "").trim() };
+}
 
-  // Option A: Send via Resend HTTP API
-  if (process.env.RESEND_API_KEY) {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from, to: [to], subject, text, html }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      throw new Error(`The email provider rejected the message (${res.status}). ${body}`.trim());
+function requireFetch() {
+  if (typeof fetch !== "function") {
+    throw new Error("This server's Node.js is too old for fetch(). Use Node 18 or newer.");
+  }
+}
+
+async function readProviderError(res) {
+  const raw = await res.text().catch(() => "");
+  try {
+    const j = JSON.parse(raw);
+    return j.message || j.error || (j.errors && JSON.stringify(j.errors)) || raw;
+  } catch {
+    return raw;
+  }
+}
+
+async function sendViaResend({ to, subject, text, html }) {
+  requireFetch();
+  const from = process.env.MAIL_FROM || "Easy ClassWork Records <onboarding@resend.dev>";
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ from, to: [to], subject, text, html }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) {
+    const detail = await readProviderError(res);
+    let hint = "";
+    if (res.status === 401 || res.status === 403) {
+      hint = " (Check RESEND_API_KEY, and that MAIL_FROM is on a domain verified in Resend. Without a verified domain Resend only sends to your own account email.)";
     }
-    return;
+    throw new Error(`Resend rejected the message (${res.status}): ${detail}${hint}`);
   }
+}
 
-  // Option B: Send via Nodemailer (SMTP / Gmail)
-  if (smtpTransporter) {
+async function sendViaBrevo({ to, subject, text, html }) {
+  requireFetch();
+  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
+  if (!from) throw new Error("MAIL_FROM is not set (it must be a sender you verified in Brevo).");
+  const sender = parseAddress(from);
+
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": process.env.BREVO_API_KEY,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      sender,
+      to: [{ email: to }],
+      subject,
+      textContent: text,
+      htmlContent: html,
+    }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) {
+    const detail = await readProviderError(res);
+    throw new Error(`Brevo rejected the message (${res.status}): ${detail}`);
+  }
+}
+
+async function sendViaSmtp({ to, subject, text, html }) {
+  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
+  if (!from) throw new Error("MAIL_FROM or SMTP_USER must be set.");
+  try {
     await smtpTransporter.sendMail({ from, to, subject, text, html });
-    return;
+  } catch (err) {
+    let hint = "";
+    if (["ETIMEDOUT", "ECONNECTION", "ESOCKET", "ECONNREFUSED"].includes(err.code)) {
+      hint = " (Could not connect to the SMTP server. Hosts like Render block SMTP ports; use RESEND_API_KEY or BREVO_API_KEY instead.)";
+    } else if (err.code === "EAUTH") {
+      hint = " (Login rejected. For Gmail use a 16-letter App Password, not your normal password.)";
+    }
+    throw new Error(`${err.message}${hint}`);
+  }
+}
+
+// Tries every configured provider in order until one works.
+async function sendEmail(message) {
+  const attempts = [];
+  if (process.env.RESEND_API_KEY) attempts.push(["Resend", sendViaResend]);
+  if (process.env.BREVO_API_KEY) attempts.push(["Brevo", sendViaBrevo]);
+  if (smtpTransporter) attempts.push(["SMTP", sendViaSmtp]);
+
+  if (attempts.length === 0) {
+    throw new Error(
+      "Email is not configured. Set RESEND_API_KEY, BREVO_API_KEY or SMTP_HOST/SMTP_USER in the server .env."
+    );
   }
 
-  throw new Error("Email is not configured. Set RESEND_API_KEY or SMTP_HOST/SMTP_USER in the server .env.");
+  const errors = [];
+  for (const [name, fn] of attempts) {
+    try {
+      await fn(message);
+      console.log(`[superadmin] Email sent to ${message.to} via ${name}.`);
+      return;
+    } catch (err) {
+      console.error(`[superadmin] ${name} email failed:`, err.message);
+      errors.push(`${name}: ${err.message}`);
+    }
+  }
+  throw new Error(errors.join(" | "));
 }
 
 async function sendSchoolCode(school) {
+  if (!school.school_code) {
+    throw new Error("This school has no school code saved, so there is nothing to email.");
+  }
+
   const loginUrl = process.env.APP_URL || "";
   const name = escapeHtml(school.name);
   const code = escapeHtml(school.school_code);
@@ -322,6 +471,26 @@ async function setStatus(id, status) {
   return school;
 }
 
+// POST /api/superadmin/test-email   (body: { to?: string })
+// Lets you check your email setup from the dashboard without approving a school.
+router.post(
+  "/test-email",
+  wrap(async (req, res) => {
+    const to = String((req.body && req.body.to) || req.admin.email).trim();
+    try {
+      await sendEmail({
+        to,
+        subject: "Easy ClassWork Records - test email",
+        text: "This is a test email. If you can read it, school code emails will work.",
+        html: "<p>This is a test email from <b>Easy ClassWork Records</b>. If you can read it, school code emails will work.</p>",
+      });
+    } catch (err) {
+      throw httpError(502, err.message);
+    }
+    res.json({ success: true, to });
+  })
+);
+
 // GET /api/superadmin/schools
 router.get(
   "/schools",
@@ -367,12 +536,21 @@ router.post(
     if (!row.code_sent_at) {
       try {
         await sendSchoolCode(row);
-        const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
-        row = marked.rows[0];
         emailSent = true;
       } catch (err) {
         emailError = err.message;
-        console.error("[superadmin] Could not email school code:", err);
+        console.error("[superadmin] Could not email school code:", err.message);
+      }
+
+      // Recording "sent" is separate so a database problem here is never
+      // reported as an email failure (the email itself already went out).
+      if (emailSent) {
+        try {
+          const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
+          row = marked.rows[0];
+        } catch (err) {
+          console.error("[superadmin] Email sent, but could not record code_sent_at:", err.message);
+        }
       }
     }
 
@@ -396,12 +574,19 @@ router.post(
     try {
       await sendSchoolCode(row);
     } catch (err) {
-      console.error("[superadmin] Could not email school code:", err);
+      console.error("[superadmin] Could not email school code:", err.message);
       throw httpError(502, `Could not send the email: ${err.message}`);
     }
 
-    const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
-    const school = serializeSchool(marked.rows[0]);
+    let latest = row;
+    try {
+      const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
+      latest = marked.rows[0];
+    } catch (err) {
+      console.error("[superadmin] Email sent, but could not record code_sent_at:", err.message);
+    }
+
+    const school = serializeSchool(latest);
     broadcast("school:updated", school);
     res.json({ success: true, school });
   })
@@ -455,5 +640,6 @@ module.exports = {
   serializeSchool,
   verifyGoogleCredential,
   signToken,
+  sendEmail,
   STATUS,
 };

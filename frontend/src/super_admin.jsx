@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { io } from 'socket.io-client';
 import esms from './assets/esms.jpg';
 import {
   ShieldCheck, Bell, Filter, UserCog, LogOut, Settings, LayoutGrid,
   Building2, Megaphone, Trash2, X, ChevronDown, Menu,
   Search, Ban, CheckCircle2, Circle, Save, Send, Activity,
-  Mail, Phone, Clock, CreditCard, Globe, RefreshCw, AlertCircle, XCircle,
+  Mail, Phone, Clock, CreditCard, RefreshCw, AlertCircle, XCircle,
 } from 'lucide-react';
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -61,6 +62,20 @@ const mapSchool = (s) => ({
     ? (s.paymentStatus ? 'pending_review' : 'pending_payment')
     : s.status,
 });
+
+// fetch() that gives up after `ms` so the screen never spins forever.
+async function fetchWithTimeout(url, options = {}, ms = 25000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error('The server took too long to respond. Please try again.');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function readSession() {
   try {
@@ -212,7 +227,7 @@ function Flash({ flash, onClose }) {
   return (
     <div className="pa-fade" role="alert" style={{ display: 'flex', gap: 9, alignItems: 'flex-start', background: c.bg, borderRadius: 8, padding: '10px 13px', color: c.fg, fontSize: 12.5, fontWeight: 600 }}>
       <c.Icon size={15} style={{ marginTop: 1, flexShrink: 0 }} />
-      <span style={{ flex: 1, lineHeight: 1.5 }}>{flash.text}</span>
+      <span style={{ flex: 1, lineHeight: 1.5, wordBreak: 'break-word' }}>{flash.text}</span>
       <button type="button" onClick={onClose} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: c.fg, cursor: 'pointer', display: 'flex', padding: 0 }}><X size={15} /></button>
     </div>
   );
@@ -244,6 +259,7 @@ function LoginScreen({ onSuccess, notice, onBack }) {
   const btnRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
+  const [verified, setVerified] = useState(null); // Google-verified, waiting for "Continue to dashboard"
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -253,14 +269,15 @@ function LoginScreen({ onSuccess, notice, onBack }) {
       setError('');
       setSigningIn(true);
       try {
-        const res = await fetch(`${API_BASE}/api/superadmin/login`, {
+        const res = await fetchWithTimeout(`${API_BASE}/api/superadmin/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ credential: response.credential }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) throw new Error(data.message || data.error || 'Sign-in failed.');
-        onSuccess({ token: data.token, email: data.email, name: data.name });
+        // Don't enter the dashboard automatically. Wait for the "Continue to dashboard" button.
+        setVerified({ token: data.token, email: data.email, name: data.name });
       } catch (err) {
         if (!cancelled) setError(err instanceof TypeError ? 'Could not reach the server. Please check your connection.' : err.message);
       } finally {
@@ -270,12 +287,12 @@ function LoginScreen({ onSuccess, notice, onBack }) {
 
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/superadmin/config`);
+        const res = await fetchWithTimeout(`${API_BASE}/api/superadmin/config`);
         const cfg = await res.json().catch(() => ({}));
         if (!res.ok || !cfg.googleClientId) throw new Error(cfg.message || 'Google sign-in is not configured on the server.');
         await loadGoogleScript();
         if (cancelled || !btnRef.current) return;
-        window.google.accounts.id.initialize({ client_id: cfg.googleClientId, callback: handleCredential });
+        window.google.accounts.id.initialize({ client_id: cfg.googleClientId, callback: handleCredential, auto_select: false, ux_mode: 'popup' });
         window.google.accounts.id.renderButton(btnRef.current, { theme: 'outline', size: 'large', text: 'continue_with', shape: 'rectangular', width: 280 });
         setReady(true);
       } catch (err) {
@@ -291,9 +308,11 @@ function LoginScreen({ onSuccess, notice, onBack }) {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <div className="pa-fade" style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 12, padding: 28, width: 380, maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 8, background: t.white, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><img src={esms} alt="Easy Class" style={{ width: 20, height: 20 }} /></div>
+          <div style={{ width: 38, height: 38, borderRadius: '50%', background: '#fff', border: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            <img src={esms} alt="ESMS" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
           <div>
-            <p className="pa-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>Easy Class</p>
+            <p className="pa-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>ESMS</p>
             <p style={{ margin: 0, fontSize: 11, color: t.subtext }}>Platform control</p>
           </div>
         </div>
@@ -305,7 +324,19 @@ function LoginScreen({ onSuccess, notice, onBack }) {
         {notice && <Flash flash={{ type: 'warn', text: notice }} onClose={() => {}} />}
         {error && <Flash flash={{ type: 'error', text: error }} onClose={() => setError('')} />}
 
-        <div style={{ minHeight: 44, display: 'flex', justifyContent: 'center', alignItems: 'center', opacity: signingIn ? 0.5 : 1, pointerEvents: signingIn ? 'none' : 'auto' }}>
+        {verified && (
+          <div className="pa-fade" style={{ background: t.greenSoft, borderRadius: 8, padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: t.green, fontSize: 13, fontWeight: 700 }}>
+              <CheckCircle2 size={16} /> Google account verified
+            </div>
+            <p style={{ margin: 0, fontSize: 12.5, color: t.text, wordBreak: 'break-all' }}>{verified.email}</p>
+            <Button variant="blue" icon={ShieldCheck} onClick={() => onSuccess(verified)} style={{ justifyContent: 'center' }}>Continue to dashboard</Button>
+            <button type="button" className="pa-btn" onClick={() => { window.google?.accounts?.id?.disableAutoSelect?.(); setVerified(null); }} style={{ background: 'none', border: 'none', color: t.subtext, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Use a different account</button>
+          </div>
+        )}
+
+        {/* The Google button stays mounted (just hidden) once verified, so "Use a different account" can show it again. */}
+        <div style={{ minHeight: 44, display: verified ? 'none' : 'flex', justifyContent: 'center', alignItems: 'center', opacity: signingIn ? 0.5 : 1, pointerEvents: signingIn ? 'none' : 'auto' }}>
           {!ready && !error && <Skeleton w={280} h={40} r={6} />}
           <div ref={btnRef} />
         </div>
@@ -340,8 +371,10 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
     <div style={{ width: 236, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '20px 16px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0, position: sidebarOpen ? 'fixed' : undefined, left: 0, top: 0, zIndex: 70 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.white, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><img src={esms} alt="ESMS" style={{ width: 24, height: 24 }} /></div>
-          <div><span className="pa-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text, display: 'block' }}>ESMS</span></div>
+          <div style={{ width: 30, height: 30, borderRadius: '50%', background: '#fff', border: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            <img src={esms} alt="ESMS" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          </div>
+          <div><span className="pa-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text, display: 'block' }}>ESMS</span><span style={{ fontSize: 10, color: t.subtext }}>Platform control</span></div>
         </div>
         {sidebarOpen && <button onClick={() => setSidebarOpen(false)} aria-label="Close menu" style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.subtext, display: 'flex' }}><X size={18} /></button>}
       </div>
@@ -349,6 +382,7 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
         <div style={{ width: 34, height: 34, borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: `2px solid ${t.blue}`, flexShrink: 0 }}><ShieldCheck size={15} color={t.blue} /></div>
         <div style={{ minWidth: 0 }}>
           <p className="pa-heading" style={{ margin: 0, fontSize: 12, fontWeight: 700, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{adminEmail || 'Platform Owner'}</p>
+          <p style={{ margin: '2px 0 0', fontSize: 10, color: t.blue, fontWeight: 600 }}>● Super admin</p>
         </div>
       </div>
       <ul className="pa-scroll" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 2, flex: 1, overflowY: 'auto' }}>
@@ -360,7 +394,7 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
     </div>
   );
 }
-function Header({ setSidebarOpen, title, onRefresh, refreshing }) {
+function Header({ setSidebarOpen, title, onRefresh, refreshing, live, notifCount, onNotifClick }) {
   return (
     <div style={{ height: 60, borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px', gap: 12, background: '#fff', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -368,12 +402,21 @@ function Header({ setSidebarOpen, title, onRefresh, refreshing }) {
         <h2 className="pa-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text }}>{title}</h2>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span title={live ? 'Connected. New registrations appear instantly.' : 'Not connected. Use refresh to reload.'} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: live ? t.green : t.faint }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: live ? t.green : t.faint }} />
+          {live ? 'Live' : 'Offline'}
+        </span>
         {onRefresh && (
           <button type="button" onClick={onRefresh} className="pa-btn" title="Refresh" aria-label="Refresh" style={{ width: 32, height: 32, borderRadius: 8, border: 'none', background: t.panel, color: t.subtext, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
             <RefreshCw size={14} style={refreshing ? { animation: 'paSpin 0.8s linear infinite' } : undefined} />
           </button>
         )}
-        <div style={{ position: 'relative' }}><IconBtn icon={Bell} title="Notifications" /></div>
+        <div style={{ position: 'relative' }}>
+          <IconBtn icon={Bell} title={notifCount ? `${notifCount} new registration${notifCount === 1 ? '' : 's'}` : 'No new registrations'} onClick={onNotifClick} tone={notifCount ? 'orange' : 'default'} />
+          {notifCount > 0 && (
+            <span style={{ position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8, background: t.red, color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>{notifCount > 9 ? '9+' : notifCount}</span>
+          )}
+        </div>
       </div>
       <style>{`@keyframes paSpin { to { transform: rotate(360deg); } }`}</style>
     </div>
@@ -464,7 +507,7 @@ function SchoolDetailModal({ school, onClose, busy, actions }) {
             {school.paymentStatus ? 'Mark as unpaid' : 'Mark as paid'}
           </Button>
           {canApprove && <Button icon={CheckCircle2} disabled={busy || !school.paymentStatus} onClick={() => actions.onApprove(school)}>{busy ? 'Working…' : 'Approve school'}</Button>}
-          {isActive && <Button variant="blue" icon={Mail} disabled={busy} onClick={() => actions.onSendCode(school)}>{school.codeSentAt ? 'Email code again' : 'Email code'}</Button>}
+          {isActive && <Button variant="blue" icon={Mail} disabled={busy} onClick={() => actions.onSendCode(school)}>{busy ? 'Sending…' : school.codeSentAt ? 'Email code again' : 'Email code'}</Button>}
           {isActive && <Button variant="redSoft" icon={Ban} disabled={busy} onClick={() => actions.onSuspend(school)}>Suspend school</Button>}
           {canReject && <Button variant="soft" icon={XCircle} disabled={busy} onClick={() => actions.onReject(school)}>Reject</Button>}
         </div>
@@ -637,13 +680,18 @@ function ActivityPage({ log }) {
 
 /* ---------------------------------- SETTINGS ---------------------------------- */
 
-function SettingsPage({ adminEmail }) {
+function SettingsPage({ adminEmail, onTestEmail, testingEmail }) {
   return (
     <div className="pa-page-pad" style={{ padding: 22, maxWidth: 560, display: 'flex', flexDirection: 'column', gap: 16 }}>
       <PageHead eyebrow="PLATFORM SETTINGS" text="Global defaults applied across every school" />
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <p className="pa-heading" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text, display: 'flex', alignItems: 'center', gap: 7 }}><ShieldCheck size={15} color={t.blue} /> Super admin account</p>
         <p style={{ margin: 0, fontSize: 12, color: t.subtext, lineHeight: 1.6 }}>Signed in as <b style={{ color: t.text }}>{adminEmail}</b>. To change the owner account, update <code>SUPERADMIN_EMAIL</code> in the server's .env file and restart the server.</p>
+      </div>
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <p className="pa-heading" style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text, display: 'flex', alignItems: 'center', gap: 7 }}><Mail size={15} color={t.blue} /> Email delivery</p>
+        <p style={{ margin: 0, fontSize: 12, color: t.subtext, lineHeight: 1.6 }}>School codes are emailed when you approve a school. Send yourself a test to check that your server's email settings work.</p>
+        <div><Button variant="blue" icon={Send} disabled={testingEmail} onClick={onTestEmail}>{testingEmail ? 'Sending…' : `Send test email to me`}</Button></div>
       </div>
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
         <Field label="Platform name"><Input defaultValue="Easy Class" /></Field>
@@ -670,11 +718,18 @@ export default function SuperAdminDashboard() {
   const [section, setSection] = useState('overview');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [flash, setFlash] = useState(null);
-  const go = (dest) => { setSection(dest); setFlash(null); };
+  const go = (dest) => {
+    setSection(dest);
+    setFlash(null);
+    if (dest === 'schools') setNotifCount(0);
+  };
 
   const [schools, setSchools] = useState([]);
   const [schoolsLoading, setSchoolsLoading] = useState(() => !!readSession());
   const [busyId, setBusyId] = useState(null);
+  const [live, setLive] = useState(false);
+  const [notifCount, setNotifCount] = useState(0);
+  const [testingEmail, setTestingEmail] = useState(false);
 
   const [announcements, setAnnouncements] = useState(() => {
     try { const v = JSON.parse(localStorage.getItem(ANNOUNCEMENTS_KEY)); return Array.isArray(v) ? v : []; } catch { return []; }
@@ -706,6 +761,8 @@ export default function SuperAdminDashboard() {
     setSchools([]);
     setSchoolDetail(null);
     setSection('overview');
+    setNotifCount(0);
+    setLive(false);
     setLoginNotice(notice);
   }
 
@@ -714,16 +771,16 @@ export default function SuperAdminDashboard() {
   async function api(path, { method = 'GET', body } = {}) {
     let res;
     try {
-      res = await fetch(`${API_BASE}/api/superadmin${path}`, {
+      res = await fetchWithTimeout(`${API_BASE}/api/superadmin${path}`, {
         method,
         headers: {
           ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-    } catch {
-      throw new Error('Could not reach the server. Please check your connection.');
+      }, 60000);
+    } catch (err) {
+      throw new Error(err?.message?.includes('too long') ? err.message : 'Could not reach the server. Please check your connection.');
     }
     const data = await res.json().catch(() => ({}));
     if (res.status === 401) {
@@ -760,6 +817,45 @@ export default function SuperAdminDashboard() {
     setSchoolDetail(d => (d && d.id === s.id ? s : d));
     return s;
   }
+
+  /* ---- live updates (Socket.IO): new registrations appear without refreshing ---- */
+
+  useEffect(() => {
+    if (!session?.token) return undefined;
+
+    const socket = io(`${API_BASE}/superadmin`, {
+      auth: { token: session.token },
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
+    });
+
+    socket.on('connect', () => setLive(true));
+    socket.on('disconnect', () => setLive(false));
+    socket.on('connect_error', (err) => {
+      setLive(false);
+      if (err?.message === 'unauthorized') endSession('Your session expired. Please sign in again.');
+    });
+
+    socket.on('school:registered', (raw) => {
+      const s = mapSchool(raw);
+      setSchools(list => (list.some(x => x.id === s.id) ? list.map(x => (x.id === s.id ? s : x)) : [s, ...list]));
+      setNotifCount(n => n + 1);
+      setFlash({ type: 'success', text: `New registration: "${s.name}" is waiting for review.` });
+      pushLog(`New registration received: "${s.name}".`);
+    });
+    socket.on('school:updated', (raw) => applyUpdate(raw));
+    socket.on('school:deleted', ({ id }) => {
+      setSchools(list => list.filter(x => x.id !== id));
+      setSchoolDetail(d => (d && d.id === id ? null : d));
+    });
+
+    // After a dropped connection, reload the list so nothing is missed.
+    socket.io.on('reconnect', () => fetchSchools());
+
+    return () => { socket.disconnect(); setLive(false); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.token]);
 
   async function run(school, work) {
     setBusyId(school.id);
@@ -831,6 +927,20 @@ export default function SuperAdminDashboard() {
     },
   };
 
+  async function handleTestEmail() {
+    setTestingEmail(true);
+    setFlash(null);
+    try {
+      const data = await api('/test-email', { method: 'POST', body: {} });
+      setFlash({ type: 'success', text: `Test email sent to ${data.to}. Check the inbox (and spam folder).` });
+      pushLog(`Sent a test email to ${data.to}.`);
+    } catch (err) {
+      setFlash({ type: 'error', text: `Test email failed: ${err.message}` });
+    } finally {
+      setTestingEmail(false);
+    }
+  }
+
   /* ---- render ---- */
 
   if (!session?.token) {
@@ -859,7 +969,7 @@ export default function SuperAdminDashboard() {
           </div>
         )}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <Header setSidebarOpen={setSidebarOpen} title={titles[section]} onRefresh={fetchSchools} refreshing={schoolsLoading} />
+          <Header setSidebarOpen={setSidebarOpen} title={titles[section]} onRefresh={fetchSchools} refreshing={schoolsLoading} live={live} notifCount={notifCount} onNotifClick={() => go('schools')} />
           <div className="pa-scroll" style={{ flex: 1, overflowY: 'auto' }}>
             {flash && <div className="pa-page-pad" style={{ padding: '16px 22px 0' }}><Flash flash={flash} onClose={() => setFlash(null)} /></div>}
             {section === 'overview' && <Overview schools={schools} go={go} loading={schoolsLoading} />}
@@ -869,7 +979,7 @@ export default function SuperAdminDashboard() {
             {section === 'admins' && <AdminsPage schools={schools} loading={schoolsLoading} />}
             {section === 'announcements' && <AnnouncementsPage announcements={announcements} loading={false} onNew={() => setAnnouncementModal(true)} onDelete={(a) => setAnnouncements(list => list.filter(x => x.id !== a.id))} />}
             {section === 'activity' && <ActivityPage log={log} />}
-            {section === 'settings' && <SettingsPage adminEmail={session.email} />}
+            {section === 'settings' && <SettingsPage adminEmail={session.email} onTestEmail={handleTestEmail} testingEmail={testingEmail} />}
           </div>
         </div>
       </div>

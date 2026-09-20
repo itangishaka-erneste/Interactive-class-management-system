@@ -1,7 +1,13 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import dashboard from './assets/dashboard.png';
 import esms from './assets/esms.jpg';
+import ceo from './assets/logo.png';
 import trends from './assets/trends.jpg';
+import nesa from './assets/nesa.jpg';
+import reb from './assets/reb.jpg';
+import minedic from './assets/minedic.jpg';
+import asyv from './assets/asyv.webp';
 import {
   BookOpen,
   ClipboardCheck,
@@ -1236,7 +1242,7 @@ export default function EasyClassWork() {
         <div className="max-w-6xl mx-auto px-5 sm:px-8 h-20 flex items-center justify-between">
           <a href="#home" className="flex items-center gap-2.5 shrink-0">
             <span className="w-12 h-12 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20 shrink-0">
-              <img src={esms} alt="ESMS logo" className="w-full h-full rounded-full" />
+              <img src={esms} alt="ESMS logo" className="w-full h-full" />
             </span>
             <span className="ecw-heading font-bold text-[15px] text-neutral-900 leading-none">
               ESMS
@@ -1552,7 +1558,7 @@ export default function EasyClassWork() {
               <span className="ecw-body text-[11px] text-neutral-400 ml-3">app.easyclasswork.rw/dashboard</span>
             </div>
             <div className="w-full aspect-[16/9] flex items-center justify-center bg-gradient-to-br from-[#EAF6EF] to-white">
-              <LayoutDashboard className="w-16 h-16 text-[#178754]" aria-hidden="true" />
+              <img src={dashboard} alt="Dashboard preview" className="w-full h-full" />
             </div>
           </div>
 
@@ -1582,8 +1588,8 @@ export default function EasyClassWork() {
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
           <div className="max-w-xl mb-10">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our team</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              The people who built Easy ClassWork Records
+            <h2 className="ecw-heading text-1xl font-extrabold text-neutral-900 mt-2">
+              The people who built ESMS
             </h2>
           </div>
           <div className="flex flex-wrap justify-center gap-6">
@@ -1595,7 +1601,7 @@ export default function EasyClassWork() {
             ].map((m) => (
               <div key={m.name} className="flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-full sm:w-[45%] lg:w-[22%]">
                 <span className={`w-24 h-24 rounded-full bg-white flex items-center justify-center mx-auto mb-4 ring-4 ${m.ring} shadow-sm`}>
-                  <UserCircle2 className="w-14 h-14" style={{ color: m.tint }} aria-hidden="true" />
+                  <img src={ceo} alt={m.name} className="w-20 h-20 rounded-full" />
                 </span>
                 <p className="ecw-heading font-bold text-sm text-neutral-900">{m.name}</p>
                 <p className="ecw-body text-xs mt-0.5" style={{ color: m.tint }}>{m.role}</p>
@@ -1689,9 +1695,9 @@ export default function EasyClassWork() {
           <div className="flex flex-col gap-3 flex-1 min-w-[220px]">
             <div className="flex items-center gap-2.5">
               <span className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center shrink-0">
-                <School className="w-6 h-6 text-white" aria-hidden="true" />
+                <img src={esms} alt="ESMS logo" className="w-full h-full" />
               </span>
-              <span className="ecw-heading font-bold text-sm">Easy ClassWork Records</span>
+              <span className="ecw-heading font-bold text-sm">ESMS</span>
             </div>
             <p className="ecw-body text-[11px] text-white/70 leading-relaxed">
               Academic records and classroom tools built for primary and secondary schools across Rwanda.

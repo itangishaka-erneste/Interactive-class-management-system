@@ -1,20 +1,65 @@
 require("dotenv").config(); // loads your .env (SUPERADMIN_EMAIL, JWT_SECRET, etc.). Must be first.
 
+const http = require("http");
 const express = require("express");
 const cors = require("cors");
+const { Server } = require("socket.io");
 const pool = require("./db");
 const registerRoute = require("./register");
 
 // File name is case-sensitive on hosts like Render: Superadmin.js -> "./Superadmin"
-const { router: superadminRouter } = require("./Superadmin");
+const { router: superadminRouter, setupSocket } = require("./Superadmin");
+const { setupClassroomSocket } = require("./classroom");
+const teacherRouter = require("./teacher");
+const schoolAdminRouter = require("./School_admin");
+const studentRouter = require("./student");
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// Socket.IO must be attached to a plain http server, so we create one here
+// and use server.listen(...) at the bottom instead of app.listen(...).
+const server = http.createServer(app);
+
+// Optional: restrict to your sites, e.g. CLIENT_URLS=http://localhost:5173,https://your-site.vercel.app
+// If CLIENT_URLS is not set, every origin is allowed (same as your old cors()).
+const allowedOrigins = (process.env.CLIENT_URLS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const corsOrigin = allowedOrigins.length ? allowedOrigins : true;
+
+app.use(cors({ origin: corsOrigin }));
+
+// The register form sends the logo as a base64 string. The default 100kb limit
+// rejects most logos, so registration failed with "PayloadTooLargeError".
+app.use(express.json({ limit: "5mb" }));
+
+// Request log: shows every request and how long it took. If a request hangs,
+// you will see a "[slow]" line in this terminal naming exactly which one.
+app.use((req, res, next) => {
+  const start = Date.now();
+  const label = `${req.method} ${req.originalUrl}`;
+  const slowTimer = setTimeout(() => console.warn(`[slow] ${label} still running after 10s`), 10000);
+  res.on("finish", () => {
+    clearTimeout(slowTimer);
+    console.log(`${label} -> ${res.statusCode} (${Date.now() - start}ms)`);
+  });
+  res.on("close", () => clearTimeout(slowTimer));
+  next();
+});
+
+// Realtime channel used by the super admin dashboard (namespace: /superadmin).
+const io = new Server(server, {
+  cors: { origin: corsOrigin, methods: ["GET", "POST"] },
+});
+setupSocket(io);
+setupClassroomSocket(io);
 
 app.use("/api/schools", registerRoute);
 app.use("/api/superadmin", superadminRouter);
+app.use("/api/teacher", teacherRouter);
+app.use("/api/schooladmin", schoolAdminRouter);
+app.use("/api/student", studentRouter);
 app.use("/uploads", express.static(__dirname + "/uploads"));
 
 app.get("/", (req, res) => {
@@ -48,6 +93,7 @@ app.get("/db-test", async (req, res) => {
 // Render (and other hosts) provide PORT; locally it falls back to 5000.
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+// IMPORTANT: server.listen, not app.listen, otherwise Socket.IO never starts.
+server.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);
 });
