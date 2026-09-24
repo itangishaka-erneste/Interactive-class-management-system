@@ -1,188 +1,55 @@
-const express = require("express");
-const fs = require("fs");
-const path = require("path");
-const jwt = require("jsonwebtoken");
-const { OAuth2Client } = require("google-auth-library");
-const nodemailer = require("nodemailer");
-const pool = require("./db");
-
-const router = express.Router();
-
 /* ============================================================================
-   CONFIG  (all of this comes from your .env)
+   School_admin.js   mounted at  /api/schooladmin
 
-     GOOGLE_CLIENT_ID   your Google OAuth client id
-     JWT_SECRET         any long random string
-     SUPERADMIN_EMAIL   the ONE Google account allowed to be super admin
-     APP_URL            your frontend URL (shown in the emailed instructions)
+   The SCHOOL admin's own dashboard API (not the super admin, not a teacher or
+   student). A school admin signs in at POST /api/schools/login (register.js);
+   that hands back a JWT shaped like { role: "schoolAdmin", schoolId, email }.
+   Every route re-checks that token and scopes every query to req.school.id.
 
-   EMAIL - set ONE of these (they are tried in this order):
+   Approval flow
+   -------------
+   Teachers and students sign up through classroom.js, which saves them with
+   status = 'pending'. They cannot sign in until this file approves them:
+     GET  /approvals                 pending sign-ups for this school
+     POST /approvals/:id/approve     -> status 'active' (+ class / subjects)
+     POST /approvals/:id/reject      -> deletes the pending request
+   /teachers and /students only ever list NON-pending people.
 
-     1) Resend  (HTTPS, works on Render)
-          RESEND_API_KEY=re_xxx
-          MAIL_FROM="Easy ClassWork <noreply@yourdomain.com>"
-        NOTE: MAIL_FROM must be on a domain you verified in Resend.
-        Without a verified domain Resend only delivers to your own account
-        email, so approvals to other schools will fail.
-
-     2) Brevo   (HTTPS, works on Render, no domain needed - verify ONE sender
-        email inside Brevo)
-          BREVO_API_KEY=xkeysib-xxx
-          MAIL_FROM="Easy ClassWork <the-email-you-verified-in-brevo@gmail.com>"
-
-     3) SMTP    (Gmail etc.)  -> DOES NOT WORK on Render free web services,
-        because outbound SMTP ports (25/465/587) are blocked there. It works
-        on your own computer and on hosts that allow SMTP.
-          SMTP_HOST=smtp.gmail.com
-          SMTP_PORT=587
-          SMTP_USER=you@gmail.com
-          SMTP_PASS=your-16-letter-gmail-app-password
-          MAIL_FROM="Easy ClassWork <you@gmail.com>"
+   Realtime: the dashboard joins the "school:<id>" room on the "/classroom"
+   Socket.IO namespace and is told about member:registered, member:approved,
+   member:rejected, member:updated, member:removed, member:classChosen,
+   class:created, class:deleted and announcement:new / :deleted.
    ============================================================================ */
 
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const oauthClient = new OAuth2Client(GOOGLE_CLIENT_ID);
+const express = require("express");
+const jwt = require("jsonwebtoken");
+const pool = require("./db");
+const cls = require("./classroom");
 
-// Reusable SMTP transporter (only created when SMTP settings exist).
-let smtpTransporter = null;
-if (process.env.SMTP_HOST || process.env.SMTP_USER) {
-  const host = process.env.SMTP_HOST || "smtp.gmail.com";
-  const port = Number(process.env.SMTP_PORT || 587);
+const { httpError, wrap, rooms, emit, requireReady } = cls;
+const router = express.Router();
 
-  smtpTransporter = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465, // true only for 465, false for 587 (STARTTLS)
-    auth: process.env.SMTP_USER
-      ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      : undefined,
-    // Fail fast instead of hanging for 2 minutes when the port is blocked.
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
-  });
-}
+router.use(requireReady);
 
-if (!process.env.SUPERADMIN_EMAIL) {
-  console.warn(
-    "[superadmin] SUPERADMIN_EMAIL is not set. Super admin login is disabled until you add it to .env."
-  );
-}
+/* --------------------------------- schema ------------------------------------ */
 
-const STATUS = {
-  PENDING: "pending",
-  ACTIVE: "active",
-  SUSPENDED: "suspended",
-  REJECTED: "rejected",
-};
-
-/* ------------------------------- small helpers ------------------------------ */
-
-const httpError = (status, message) => Object.assign(new Error(message), { status });
-
-function getSuperAdminEmail() {
-  const email = (process.env.SUPERADMIN_EMAIL || "").trim().toLowerCase();
-  if (!email) {
-    throw httpError(500, "Server is missing SUPERADMIN_EMAIL in its .env file.");
-  }
-  return email;
-}
-
-function getSecret() {
-  if (!process.env.JWT_SECRET) {
-    throw httpError(500, "Server is missing JWT_SECRET in its .env file.");
-  }
-  return process.env.JWT_SECRET;
-}
-
-function signToken(payload, expiresIn = "12h") {
-  return jwt.sign(payload, getSecret(), { expiresIn });
-}
-
-function verifyToken(token) {
-  try {
-    return jwt.verify(token, getSecret());
-  } catch (err) {
-    if (err.status) throw err;
-    throw httpError(401, "Your session expired. Please sign in again.");
-  }
-}
-
-async function verifyGoogleCredential(credential) {
-  if (!GOOGLE_CLIENT_ID) {
-    throw httpError(500, "Server is missing GOOGLE_CLIENT_ID in its .env file.");
-  }
-
-  let ticket;
-  try {
-    ticket = await Promise.race([
-      oauthClient.verifyIdToken({ idToken: credential, audience: GOOGLE_CLIENT_ID }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Google verification timed out")), 15000)
-      ),
-    ]);
-  } catch (err) {
-    console.error("[superadmin] Google verification failed:", err.message);
-    throw httpError(401, "Google verification failed. Please choose your account again.");
-  }
-
-  const payload = ticket.getPayload();
-  if (!payload || !payload.email) throw httpError(401, "Google token had no email.");
-  if (!payload.email_verified) throw httpError(401, "Google email is not verified.");
-
-  return { email: payload.email, name: payload.name || "", picture: payload.picture || "" };
-}
-
-function serializeSchool(r) {
-  const logo = r.logo_url || null;
-  return {
-    id: r.id,
-    name: r.name,
-    email: r.email,
-    phone: r.phone,
-    code: r.school_code,
-    status: r.status,
-    paymentStatus: !!r.payment_status,
-    // A base64 logo can be huge; don't push it through every list/socket event.
-    logoUrl: logo && !String(logo).startsWith("data:") ? logo : null,
-    createdAt: r.created_at,
-    codeSentAt: r.code_sent_at || null,
-  };
-}
-
-const sendError = (res, status, message) =>
-  res.status(status).json({ success: false, message, error: message });
-
-const wrap = (fn) => async (req, res) => {
-  try {
-    await fn(req, res);
-  } catch (err) {
-    const status = err.status || 500;
-    if (status === 500) console.error("[superadmin] Unexpected error:", err);
-    sendError(res, status, err.message || "Something went wrong.");
-  }
-};
-
-/* ------------------------------ database safety ------------------------------ */
-
-// The email feature needs the code_sent_at column. We only ALTER the table when
-// the column is really missing, and we give up after 5 seconds if the table is
-// locked. (A waiting ALTER TABLE makes every other query on "schools" queue
-// behind it, which looks like registration / sign-in / sending "never ends".)
-(async () => {
+const ready = (async () => {
   let client;
   try {
     client = await pool.connect();
-    const has = await client.query(
-      "SELECT 1 FROM information_schema.columns WHERE table_name = 'schools' AND column_name = 'code_sent_at' LIMIT 1"
-    );
-    if (has.rowCount === 0) {
-      await client.query("SET lock_timeout = '5s'");
-      await client.query("ALTER TABLE schools ADD COLUMN code_sent_at TIMESTAMPTZ");
-      console.log("[superadmin] Added missing column schools.code_sent_at");
-    }
-  } catch (err) {
-    console.error("[superadmin] Could not ensure code_sent_at column:", err.message);
+    await client.query("SET lock_timeout = '10s'");
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ecw_announcements (
+        id SERIAL PRIMARY KEY,
+        school_id INTEGER NOT NULL REFERENCES schools(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        audience TEXT NOT NULL DEFAULT 'everyone' CHECK (audience IN ('everyone', 'teachers', 'students')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS ecw_announcements_school_idx ON ecw_announcements (school_id, created_at DESC);
+    `);
+    console.log("[schooladmin] Tables are ready.");
   } finally {
     if (client) {
       try { await client.query("RESET lock_timeout"); } catch { /* ignore */ }
@@ -190,456 +57,472 @@ const wrap = (fn) => async (req, res) => {
     }
   }
 })();
+ready.catch((err) => console.error("[schooladmin] Could not create tables:", err.message));
 
-/* ---------------------------------- realtime --------------------------------- */
-
-// Kept on globalThis so realtime still works even if this file gets loaded twice
-// (that happens when one file requires "./superadmin" and another "./Superadmin":
-// on Windows/macOS the two spellings are treated as two different modules).
-const NS_KEY = "__ecwSuperadminNamespace";
-
-// Call this ONCE from your server entry file with the socket.io Server.
-function setupSocket(io) {
-  const ns = io.of("/superadmin");
-  globalThis[NS_KEY] = ns;
-
-  ns.use((socket, next) => {
-    try {
-      const payload = verifyToken(socket.handshake.auth && socket.handshake.auth.token);
-      if (payload.role !== "superadmin") throw new Error("not super admin");
-      socket.data.admin = payload;
-      next();
-    } catch {
-      next(new Error("unauthorized"));
-    }
-  });
-
-  ns.on("connection", (socket) => {
-    console.log(`[superadmin] realtime connected: ${socket.data.admin.email}`);
-    socket.emit("ready", { email: socket.data.admin.email });
-  });
-
-  return ns;
-}
-
-// Used by other routes too, e.g. broadcast("school:registered", serializeSchool(row)).
-function broadcast(event, payload) {
-  const ns = globalThis[NS_KEY];
-  if (ns) ns.emit(event, payload);
-  else console.warn(`[superadmin] broadcast("${event}") skipped: setupSocket(io) was never called.`);
-}
-
-/* ----------------------------------- email ----------------------------------- */
-
-const escapeHtml = (s) =>
-  String(s).replace(
-    /[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
-  );
-
-// "Name <a@b.com>"  ->  { name, email }
-function parseAddress(from) {
-  const m = /^\s*(.*?)\s*<([^>]+)>\s*$/.exec(from || "");
-  if (m) return { name: m[1].replace(/^"|"$/g, "").trim() || "Easy ClassWork Records", email: m[2].trim() };
-  return { name: "Easy ClassWork Records", email: String(from || "").trim() };
-}
-
-function requireFetch() {
-  if (typeof fetch !== "function") {
-    throw new Error("This server's Node.js is too old for fetch(). Use Node 18 or newer.");
-  }
-}
-
-async function readProviderError(res) {
-  const raw = await res.text().catch(() => "");
-  try {
-    const j = JSON.parse(raw);
-    return j.message || j.error || (j.errors && JSON.stringify(j.errors)) || raw;
-  } catch {
-    return raw;
-  }
-}
-
-async function sendViaResend({ to, subject, text, html }) {
-  requireFetch();
-  const from = process.env.MAIL_FROM || "Easy ClassWork Records <onboarding@resend.dev>";
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ from, to: [to], subject, text, html }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const detail = await readProviderError(res);
-    let hint = "";
-    if (res.status === 401 || res.status === 403) {
-      hint = " (Check RESEND_API_KEY, and that MAIL_FROM is on a domain verified in Resend. Without a verified domain Resend only sends to your own account email.)";
-    }
-    throw new Error(`Resend rejected the message (${res.status}): ${detail}${hint}`);
-  }
-}
-
-async function sendViaBrevo({ to, subject, text, html }) {
-  requireFetch();
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
-  if (!from) throw new Error("MAIL_FROM is not set (it must be a sender you verified in Brevo).");
-  const sender = parseAddress(from);
-
-  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      "api-key": process.env.BREVO_API_KEY,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      sender,
-      to: [{ email: to }],
-      subject,
-      textContent: text,
-      htmlContent: html,
-    }),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const detail = await readProviderError(res);
-    throw new Error(`Brevo rejected the message (${res.status}): ${detail}`);
-  }
-}
-
-async function sendViaSmtp({ to, subject, text, html }) {
-  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
-  if (!from) throw new Error("MAIL_FROM or SMTP_USER must be set.");
-  try {
-    await smtpTransporter.sendMail({ from, to, subject, text, html });
-  } catch (err) {
-    let hint = "";
-    if (["ETIMEDOUT", "ECONNECTION", "ESOCKET", "ECONNREFUSED"].includes(err.code)) {
-      hint = " (Could not connect to the SMTP server. Hosts like Render block SMTP ports; use RESEND_API_KEY or BREVO_API_KEY instead.)";
-    } else if (err.code === "EAUTH") {
-      hint = " (Login rejected. For Gmail use a 16-letter App Password, not your normal password.)";
-    }
-    throw new Error(`${err.message}${hint}`);
-  }
-}
-
-// Tries every configured provider in order until one works.
-async function sendEmail(message) {
-  const attempts = [];
-  if (process.env.RESEND_API_KEY) attempts.push(["Resend", sendViaResend]);
-  if (process.env.BREVO_API_KEY) attempts.push(["Brevo", sendViaBrevo]);
-  if (smtpTransporter) attempts.push(["SMTP", sendViaSmtp]);
-
-  if (attempts.length === 0) {
-    throw new Error(
-      "Email is not configured. Set RESEND_API_KEY, BREVO_API_KEY or SMTP_HOST/SMTP_USER in the server .env."
-    );
-  }
-
-  const errors = [];
-  for (const [name, fn] of attempts) {
-    try {
-      await fn(message);
-      console.log(`[superadmin] Email sent to ${message.to} via ${name}.`);
-      return;
-    } catch (err) {
-      console.error(`[superadmin] ${name} email failed:`, err.message);
-      errors.push(`${name}: ${err.message}`);
-    }
-  }
-  throw new Error(errors.join(" | "));
-}
-
-async function sendSchoolCode(school) {
-  if (!school.school_code) {
-    throw new Error("This school has no school code saved, so there is nothing to email.");
-  }
-
-  const loginUrl = process.env.APP_URL || "";
-  const name = escapeHtml(school.name);
-  const code = escapeHtml(school.school_code);
-  const email = escapeHtml(school.email);
-
-  const text = [
-    "Hello,",
-    "",
-    `Good news: ${school.name} has been approved on Easy ClassWork Records.`,
-    "",
-    `Your school code: ${school.school_code}`,
-    "",
-    "How to get started:",
-    `1. Sign in as school admin with the Google account ${school.email}${loginUrl ? ` at ${loginUrl}` : ""}.`,
-    "2. Share the school code with your teachers and students so they can sign up.",
-    "",
-    "Please keep this code private to your school.",
-    "",
-    "Easy ClassWork Records",
-  ].join("\n");
-
-  const html = `
-    <div style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:0 auto;color:#111827;line-height:1.55">
-      <h2 style="margin:0 0 8px;color:rgb(22,32,111)">${name} is approved</h2>
-      <p style="margin:0 0 16px">Your school is now active on Easy ClassWork Records.</p>
-      <div style="background:#ECFDF5;border:1px solid #10B981;border-radius:10px;padding:16px;text-align:center;margin:0 0 16px">
-        <div style="font-size:12px;color:#6B7280;margin-bottom:4px">Your school code</div>
-        <div style="font-size:26px;font-weight:800;letter-spacing:3px;color:rgb(22,32,111)">${code}</div>
-      </div>
-      <ol style="padding-left:18px;margin:0 0 16px">
-        <li>Sign in as <b>school admin</b> with the Google account <b>${email}</b>${
-          loginUrl ? ` at <a href="${escapeHtml(loginUrl)}">${escapeHtml(loginUrl)}</a>` : ""
-        }.</li>
-        <li>Share the school code with your teachers and students so they can sign up.</li>
-      </ol>
-      <p style="font-size:12px;color:#6B7280;margin:0">Please keep this code private to your school.</p>
-    </div>`;
-
-  await sendEmail({
-    to: school.email,
-    subject: `${String(school.name).replace(/[\r\n]+/g, " ")} is approved - your school code`,
-    text,
-    html,
-  });
-}
-
-/* ------------------------------ public routes -------------------------------- */
-
-// GET /api/superadmin/config
-router.get("/config", (req, res) => {
-  if (!GOOGLE_CLIENT_ID) {
-    return sendError(res, 500, "Server is missing GOOGLE_CLIENT_ID in its .env file.");
-  }
-  res.json({ success: true, googleClientId: GOOGLE_CLIENT_ID });
+router.use((req, res, next) => {
+  ready.then(() => next(), (err) => res.status(500).json({ success: false, message: `Announcements table is not ready: ${err.message}` }));
 });
 
-// POST /api/superadmin/login
-router.post(
-  "/login",
-  wrap(async (req, res) => {
-    const { credential } = req.body || {};
-    if (!credential) throw httpError(400, "Google credential is required.");
+/* ---------------------------------- auth ------------------------------------- */
 
-    const allowedEmail = getSuperAdminEmail();
-    const google = await verifyGoogleCredential(credential);
+function getSecret() {
+  if (!process.env.JWT_SECRET) throw httpError(500, "Server is missing JWT_SECRET in its .env file.");
+  return process.env.JWT_SECRET;
+}
 
-    if (google.email.trim().toLowerCase() !== allowedEmail) {
-      throw httpError(403, "This Google account is not authorized for super admin access.");
+function readCookies(req) {
+  return String(req.headers.cookie || "").split(";").reduce((all, item) => {
+    const at = item.indexOf("=");
+    if (at > -1) {
+      const name = item.slice(0, at).trim();
+      const value = item.slice(at + 1).trim();
+      try { all[name] = decodeURIComponent(value); } catch { all[name] = value; }
+    }
+    return all;
+  }, {});
+}
+
+async function requireSchoolAdmin(req, res, next) {
+  try {
+    const header = String(req.headers.authorization || "").trim();
+    const cookies = readCookies(req);
+    const token = /^Bearer\s+/i.test(header)
+      ? header.replace(/^Bearer\s+/i, "").trim()
+      : (cookies.schoolAdminToken || "");
+    if (!token) throw httpError(401, "Please sign in.");
+
+    // Expired tokens are rejected (the old ignoreExpiration made a 7-day token
+    // valid forever). The dashboard sends the admin back to sign in on a 401.
+    let payload;
+    try {
+      payload = jwt.verify(token, getSecret());
+    } catch (err) {
+      if (err.status) throw err;
+      throw httpError(401, err.name === "TokenExpiredError"
+        ? "Your session expired. Please sign in again."
+        : "Your session is invalid. Please sign in again.");
     }
 
-    const token = signToken({ role: "superadmin", email: google.email });
-    res.json({ success: true, token, email: google.email, name: google.name });
-  })
-);
+    const role = String(payload.role || "").replace(/[_-]/g, "").toLowerCase();
+    const schoolId = payload.schoolId || payload.school_id;
+    if (role !== "schooladmin" || !schoolId) throw httpError(403, "Not allowed.");
 
-/* --------------------------- everything below needs login -------------------- */
+    const r = await pool.query("SELECT * FROM schools WHERE id = $1", [schoolId]);
+    if (r.rowCount === 0) throw httpError(401, "This school no longer exists.");
+    const school = r.rows[0];
+    if (school.status !== "active") throw httpError(403, "This school is not active. Please contact support.");
 
-function requireSuperAdmin(req, res, next) {
-  try {
-    const header = req.headers.authorization || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
-    if (!token) throw httpError(401, "Please sign in.");
-    const payload = verifyToken(token);
-    if (payload.role !== "superadmin") throw httpError(403, "Not allowed.");
-    req.admin = payload;
+    req.school = school;
+    res.set("Cache-Control", "no-store");
     next();
   } catch (err) {
-    sendError(res, err.status || 401, err.message);
+    res.status(err.status || 401).json({ success: false, message: err.message, error: err.message });
   }
 }
 
-router.use(requireSuperAdmin);
+router.use(requireSchoolAdmin);
 
-function parseId(req) {
-  const id = Number.parseInt(req.params.id, 10);
-  if (!Number.isInteger(id) || id < 1) throw httpError(400, "Invalid school id.");
+/* --------------------------------- helpers ----------------------------------- */
+
+function parseId(value, what = "id") {
+  const id = Number.parseInt(value, 10);
+  if (!Number.isInteger(id) || id < 1) throw httpError(400, `Invalid ${what}.`);
   return id;
 }
 
-async function getSchoolRow(id) {
-  const r = await pool.query("SELECT * FROM schools WHERE id = $1", [id]);
-  if (r.rowCount === 0) throw httpError(404, "School not found.");
-  return r.rows[0];
+const clean = (v, max) => String(v ?? "").trim().slice(0, max);
+
+const serializeSchool = (s) => ({
+  id: s.id, name: s.name, email: s.email, phone: s.phone,
+  code: s.school_code, logoUrl: s.logo_url, createdAt: s.created_at,
+});
+
+const serializeMemberRow = (m) => ({
+  id: m.id,
+  fullName: m.full_name,
+  email: m.email,
+  imageUrl: m.image_url || m.avatar_url || m.photo_url || m.picture || null,
+  avatarUrl: m.avatar_url || m.image_url || m.photo_url || m.picture || null,
+  status: m.status,
+  classId: m.class_id || null,
+  className: m.class_name || null,
+  createdAt: m.created_at,
+});
+
+// A class must belong to THIS school (works with the pool or a transaction client).
+async function assertClass(db, classId, schoolId) {
+  const c = await db.query("SELECT id FROM ecw_classes WHERE id = $1 AND school_id = $2", [classId, schoolId]);
+  if (c.rowCount === 0) throw httpError(400, "That class does not belong to your school.");
 }
 
-async function setStatus(id, status) {
-  const r = await pool.query("UPDATE schools SET status = $1 WHERE id = $2 RETURNING *", [status, id]);
-  if (r.rowCount === 0) throw httpError(404, "School not found.");
-  const school = serializeSchool(r.rows[0]);
-  broadcast("school:updated", school);
-  return school;
-}
+const MEMBER_WITH_CLASS = `
+  SELECT m.*, c.name AS class_name
+  FROM ecw_members m LEFT JOIN ecw_classes c ON c.id = m.class_id`;
 
-// POST /api/superadmin/test-email   (body: { to?: string })
-// Lets you check your email setup from the dashboard without approving a school.
-router.post(
-  "/test-email",
-  wrap(async (req, res) => {
-    const to = String((req.body && req.body.to) || req.admin.email).trim();
-    try {
-      await sendEmail({
-        to,
-        subject: "Easy ClassWork Records - test email",
-        text: "This is a test email. If you can read it, school code emails will work.",
-        html: "<p>This is a test email from <b>Easy ClassWork Records</b>. If you can read it, school code emails will work.</p>",
-      });
-    } catch (err) {
-      throw httpError(502, err.message);
-    }
-    res.json({ success: true, to });
-  })
-);
+/* ------------------------------------ me ------------------------------------- */
 
-// GET /api/superadmin/schools
 router.get(
-  "/schools",
+  "/me",
   wrap(async (req, res) => {
-    const r = await pool.query("SELECT * FROM schools ORDER BY created_at DESC, id DESC");
-    res.json({ success: true, schools: r.rows.map(serializeSchool) });
+    const schoolId = req.school.id;
+    const [teachers, students, pending, classes, notes, quizzes] = await Promise.all([
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_members WHERE role = 'teacher' AND school_id = $1 AND status <> 'pending'", [schoolId]),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_members WHERE role = 'student' AND school_id = $1 AND status <> 'pending'", [schoolId]),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_members WHERE school_id = $1 AND status = 'pending'", [schoolId]),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_classes WHERE school_id = $1", [schoolId]),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_notes n JOIN ecw_classes c ON c.id = n.class_id WHERE c.school_id = $1 AND n.status = 'published'", [schoolId]),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_quizzes z JOIN ecw_classes c ON c.id = z.class_id WHERE c.school_id = $1 AND z.status = 'published'", [schoolId]),
+    ]);
+    res.json({
+      success: true,
+      school: serializeSchool(req.school),
+      counts: {
+        teachers: teachers.rows[0].n,
+        students: students.rows[0].n,
+        pendingApprovals: pending.rows[0].n,
+        classes: classes.rows[0].n,
+        publishedNotes: notes.rows[0].n,
+        publishedQuizzes: quizzes.rows[0].n,
+      },
+    });
   })
 );
 
-// PATCH /api/superadmin/schools/:id/payment
-router.patch(
-  "/schools/:id/payment",
+/* --------------------------------- classes ----------------------------------- */
+
+router.get(
+  "/classes",
   wrap(async (req, res) => {
-    const id = parseId(req);
-    const paid = req.body && req.body.paid;
-    if (typeof paid !== "boolean") throw httpError(400, "'paid' must be true or false.");
-
-    const r = await pool.query("UPDATE schools SET payment_status = $1 WHERE id = $2 RETURNING *", [paid, id]);
-    if (r.rowCount === 0) throw httpError(404, "School not found.");
-
-    const school = serializeSchool(r.rows[0]);
-    broadcast("school:updated", school);
-    res.json({ success: true, school });
+    const r = await pool.query(
+      `SELECT c.id, c.name, c.created_at,
+         (SELECT COUNT(*) FROM ecw_members m WHERE m.role = 'student' AND m.class_id = c.id AND m.status <> 'pending')::int AS student_count,
+         (SELECT COUNT(DISTINCT teacher_id) FROM ecw_teacher_assignments a WHERE a.class_id = c.id)::int AS teacher_count
+       FROM ecw_classes c WHERE c.school_id = $1 ORDER BY c.name`,
+      [req.school.id]
+    );
+    res.json({
+      success: true,
+      classes: r.rows.map((c) => ({ id: c.id, name: c.name, createdAt: c.created_at, studentCount: c.student_count, teacherCount: c.teacher_count })),
+    });
   })
 );
 
-// POST /api/superadmin/schools/:id/approve
 router.post(
-  "/schools/:id/approve",
+  "/classes",
   wrap(async (req, res) => {
-    const id = parseId(req);
-    const existing = await getSchoolRow(id);
-
-    if (!existing.payment_status) {
-      throw httpError(400, "Mark this school as paid before approving it.");
-    }
-
-    const updated = await pool.query("UPDATE schools SET status = $1 WHERE id = $2 RETURNING *", [STATUS.ACTIVE, id]);
-    let row = updated.rows[0];
-    let emailSent = false;
-    let emailError = null;
-
-    if (!row.code_sent_at) {
-      try {
-        await sendSchoolCode(row);
-        emailSent = true;
-      } catch (err) {
-        emailError = err.message;
-        console.error("[superadmin] Could not email school code:", err.message);
-      }
-
-      // Recording "sent" is separate so a database problem here is never
-      // reported as an email failure (the email itself already went out).
-      if (emailSent) {
-        try {
-          const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
-          row = marked.rows[0];
-        } catch (err) {
-          console.error("[superadmin] Email sent, but could not record code_sent_at:", err.message);
-        }
-      }
-    }
-
-    const school = serializeSchool(row);
-    broadcast("school:updated", school);
-    res.json({ success: true, school, emailSent, emailError });
+    const name = clean(req.body && req.body.name, 60);
+    if (!name) throw httpError(400, "Enter a class name.");
+    const existing = await pool.query("SELECT id FROM ecw_classes WHERE school_id = $1 AND LOWER(name) = LOWER($2)", [req.school.id, name]);
+    if (existing.rowCount > 0) throw httpError(409, "A class with this name already exists.");
+    const ins = await pool.query("INSERT INTO ecw_classes (school_id, name) VALUES ($1, $2) RETURNING id, name, created_at", [req.school.id, name]);
+    const created = ins.rows[0];
+    emit(rooms.school(req.school.id), "class:created", { id: created.id, name: created.name });
+    res.status(201).json({ success: true, class: { id: created.id, name: created.name, createdAt: created.created_at, studentCount: 0, teacherCount: 0 } });
   })
 );
 
-// POST /api/superadmin/schools/:id/send-code
-router.post(
-  "/schools/:id/send-code",
-  wrap(async (req, res) => {
-    const id = parseId(req);
-    const row = await getSchoolRow(id);
-
-    if (row.status !== STATUS.ACTIVE) {
-      throw httpError(400, "Approve the school before emailing its code.");
-    }
-
-    try {
-      await sendSchoolCode(row);
-    } catch (err) {
-      console.error("[superadmin] Could not email school code:", err.message);
-      throw httpError(502, `Could not send the email: ${err.message}`);
-    }
-
-    let latest = row;
-    try {
-      const marked = await pool.query("UPDATE schools SET code_sent_at = NOW() WHERE id = $1 RETURNING *", [id]);
-      latest = marked.rows[0];
-    } catch (err) {
-      console.error("[superadmin] Email sent, but could not record code_sent_at:", err.message);
-    }
-
-    const school = serializeSchool(latest);
-    broadcast("school:updated", school);
-    res.json({ success: true, school });
-  })
-);
-
-// POST /api/superadmin/schools/:id/suspend
-router.post(
-  "/schools/:id/suspend",
-  wrap(async (req, res) => {
-    const id = parseId(req);
-    const row = await getSchoolRow(id);
-    if (row.status !== STATUS.ACTIVE) throw httpError(400, "Only active schools can be suspended.");
-    res.json({ success: true, school: await setStatus(id, STATUS.SUSPENDED) });
-  })
-);
-
-// POST /api/superadmin/schools/:id/reject
-router.post(
-  "/schools/:id/reject",
-  wrap(async (req, res) => {
-    const id = parseId(req);
-    const row = await getSchoolRow(id);
-    if (row.status === STATUS.ACTIVE) throw httpError(400, "Suspend an active school instead of rejecting it.");
-    res.json({ success: true, school: await setStatus(id, STATUS.REJECTED) });
-  })
-);
-
-// DELETE /api/superadmin/schools/:id
 router.delete(
-  "/schools/:id",
+  "/classes/:id",
   wrap(async (req, res) => {
-    const id = parseId(req);
-    const row = await getSchoolRow(id);
-
-    await pool.query("DELETE FROM schools WHERE id = $1", [id]);
-
-    if (row.logo_url && row.logo_url.startsWith("/uploads/logos/")) {
-      const file = path.join(__dirname, "uploads", "logos", path.basename(row.logo_url));
-      fs.unlink(file, () => {});
-    }
-
-    broadcast("school:deleted", { id });
+    const id = parseId(req.params.id, "class");
+    const r = await pool.query("DELETE FROM ecw_classes WHERE id = $1 AND school_id = $2 RETURNING id, name", [id, req.school.id]);
+    if (r.rowCount === 0) throw httpError(404, "Class not found.");
+    emit(rooms.school(req.school.id), "class:deleted", { id, name: r.rows[0].name });
     res.json({ success: true });
   })
 );
 
-module.exports = {
-  router,
-  setupSocket,
-  broadcast,
-  serializeSchool,
-  verifyGoogleCredential,
-  signToken,
-  sendEmail,
-  STATUS,
-};
+/* -------------------------------- approvals ---------------------------------- */
+
+router.get(
+  "/approvals",
+  wrap(async (req, res) => {
+    const r = await pool.query(
+      `${MEMBER_WITH_CLASS}
+       WHERE m.school_id = $1 AND m.role IN ('teacher', 'student') AND m.status = 'pending'
+       ORDER BY m.created_at`,
+      [req.school.id]
+    );
+    res.json({ success: true, approvals: r.rows.map((m) => ({ ...serializeMemberRow(m), role: m.role })) });
+  })
+);
+
+router.post(
+  "/approvals/:id/approve",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "request");
+    const found = await pool.query(
+      "SELECT * FROM ecw_members WHERE id = $1 AND school_id = $2 AND status = 'pending'",
+      [id, req.school.id]
+    );
+    if (found.rowCount === 0) throw httpError(404, "Request not found or already handled.");
+    const member = found.rows[0];
+    let newClassId = null;
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (member.role === "student") {
+        // Class is optional: a student without one picks it themselves after signing in.
+        if (req.body && req.body.classId) {
+          newClassId = parseId(req.body.classId, "class");
+          await assertClass(client, newClassId, req.school.id);
+        }
+        await client.query("UPDATE ecw_members SET status = 'active', class_id = $1 WHERE id = $2", [newClassId, id]);
+      } else {
+        // Subjects are optional too: teachers can add their own in Settings.
+        const list = Array.isArray(req.body && req.body.assignments) ? req.body.assignments : [];
+        for (const item of list) {
+          const classId = parseId(item && item.classId, "class");
+          const subject = clean(item && item.subject, 80);
+          if (!subject) throw httpError(400, "Every class needs a subject.");
+          await assertClass(client, classId, req.school.id);
+          await client.query(
+            "INSERT INTO ecw_teacher_assignments (teacher_id, class_id, subject) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            [id, classId, subject]
+          );
+        }
+        await client.query("UPDATE ecw_members SET status = 'active' WHERE id = $1", [id]);
+      }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    if (newClassId) cls.moveStudentToClass(id, null, newClassId);
+    emit(rooms.school(req.school.id), "member:approved", { id, role: member.role, fullName: member.full_name });
+    res.json({ success: true });
+  })
+);
+
+router.post(
+  "/approvals/:id/reject",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "request");
+    const r = await pool.query(
+      "DELETE FROM ecw_members WHERE id = $1 AND school_id = $2 AND status = 'pending' RETURNING role, full_name",
+      [id, req.school.id]
+    );
+    if (r.rowCount === 0) throw httpError(404, "Request not found or already handled.");
+    emit(rooms.school(req.school.id), "member:rejected", { id, role: r.rows[0].role, fullName: r.rows[0].full_name });
+    res.json({ success: true });
+  })
+);
+
+/* --------------------------------- teachers ---------------------------------- */
+
+router.get(
+  "/teachers",
+  wrap(async (req, res) => {
+    const r = await pool.query(
+      `SELECT m.*, NULL::text AS class_name FROM ecw_members m
+       WHERE m.role = 'teacher' AND m.school_id = $1 AND m.status <> 'pending'
+       ORDER BY m.full_name`,
+      [req.school.id]
+    );
+    const ids = r.rows.map((m) => m.id);
+    const a = ids.length
+      ? await pool.query(
+          `SELECT a.id, a.teacher_id, a.class_id, a.subject, c.name AS class_name
+           FROM ecw_teacher_assignments a JOIN ecw_classes c ON c.id = a.class_id
+           WHERE a.teacher_id = ANY($1::int[]) ORDER BY c.name, a.subject`,
+          [ids]
+        )
+      : { rows: [] };
+    res.json({
+      success: true,
+      teachers: r.rows.map((m) => ({
+        ...serializeMemberRow(m),
+        assignments: a.rows
+          .filter((x) => x.teacher_id === m.id)
+          .map((x) => ({ id: x.id, classId: x.class_id, className: x.class_name, subject: x.subject })),
+      })),
+    });
+  })
+);
+
+router.patch(
+  "/teachers/:id/status",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "teacher");
+    const status = req.body && req.body.status === "suspended" ? "suspended" : "active";
+    const r = await pool.query(
+      "UPDATE ecw_members SET status = $1 WHERE id = $2 AND role = 'teacher' AND school_id = $3 AND status <> 'pending' RETURNING *",
+      [status, id, req.school.id]
+    );
+    if (r.rowCount === 0) throw httpError(404, "Teacher not found.");
+    emit(rooms.school(req.school.id), "member:updated", { id, role: "teacher", status });
+    res.json({ success: true, teacher: serializeMemberRow(r.rows[0]) });
+  })
+);
+
+router.post(
+  "/teachers/:id/assignments",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "teacher");
+    const classId = parseId(req.body && req.body.classId, "class");
+    const subject = clean(req.body && req.body.subject, 80);
+    if (!subject) throw httpError(400, "Enter a subject.");
+    const t = await pool.query(
+      "SELECT id FROM ecw_members WHERE id = $1 AND role = 'teacher' AND school_id = $2 AND status <> 'pending'",
+      [id, req.school.id]
+    );
+    if (t.rowCount === 0) throw httpError(404, "Teacher not found.");
+    await assertClass(pool, classId, req.school.id);
+    await pool.query(
+      "INSERT INTO ecw_teacher_assignments (teacher_id, class_id, subject) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+      [id, classId, subject]
+    );
+    emit(rooms.member(id), "assignments:changed", { teacherId: id });
+    emit(rooms.school(req.school.id), "member:updated", { id, role: "teacher" });
+    res.json({ success: true });
+  })
+);
+
+router.delete(
+  "/teachers/:id",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "teacher");
+    const r = await pool.query("DELETE FROM ecw_members WHERE id = $1 AND role = 'teacher' AND school_id = $2 RETURNING id", [id, req.school.id]);
+    if (r.rowCount === 0) throw httpError(404, "Teacher not found.");
+    emit(rooms.school(req.school.id), "member:removed", { id, role: "teacher" });
+    res.json({ success: true });
+  })
+);
+
+/* --------------------------------- students ---------------------------------- */
+
+router.get(
+  "/students",
+  wrap(async (req, res) => {
+    const r = await pool.query(
+      `SELECT m.*, c.name AS class_name,
+         (SELECT COUNT(*) FROM ecw_quiz_attempts a WHERE a.student_id = m.id AND a.submitted_at IS NOT NULL)::int AS quizzes_done,
+         (SELECT ROUND(AVG(a.score_percent)) FROM ecw_quiz_attempts a WHERE a.student_id = m.id AND a.submitted_at IS NOT NULL)::int AS average_score
+       FROM ecw_members m LEFT JOIN ecw_classes c ON c.id = m.class_id
+       WHERE m.role = 'student' AND m.school_id = $1 AND m.status <> 'pending'
+       ORDER BY m.full_name`,
+      [req.school.id]
+    );
+    res.json({
+      success: true,
+      students: r.rows.map((m) => ({ ...serializeMemberRow(m), quizzesDone: m.quizzes_done || 0, averageScore: m.average_score })),
+    });
+  })
+);
+
+router.patch(
+  "/students/:id/status",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "student");
+    const status = req.body && req.body.status === "suspended" ? "suspended" : "active";
+    const r = await pool.query(
+      "UPDATE ecw_members SET status = $1 WHERE id = $2 AND role = 'student' AND school_id = $3 AND status <> 'pending' RETURNING *",
+      [status, id, req.school.id]
+    );
+    if (r.rowCount === 0) throw httpError(404, "Student not found.");
+    emit(rooms.school(req.school.id), "member:updated", { id, role: "student", status });
+    res.json({ success: true, student: serializeMemberRow(r.rows[0]) });
+  })
+);
+
+router.patch(
+  "/students/:id/class",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "student");
+    const classId = req.body && req.body.classId ? parseId(req.body.classId, "class") : null;
+
+    const before = await pool.query(
+      "SELECT * FROM ecw_members WHERE id = $1 AND role = 'student' AND school_id = $2 AND status <> 'pending'",
+      [id, req.school.id]
+    );
+    if (before.rowCount === 0) throw httpError(404, "Student not found.");
+    if (classId) await assertClass(pool, classId, req.school.id);
+
+    await pool.query("UPDATE ecw_members SET class_id = $1 WHERE id = $2", [classId, id]);
+    cls.moveStudentToClass(id, before.rows[0].class_id, classId);
+
+    const full = await pool.query(`${MEMBER_WITH_CLASS} WHERE m.id = $1`, [id]);
+    emit(rooms.school(req.school.id), "member:updated", { id, role: "student" });
+    res.json({ success: true, student: serializeMemberRow(full.rows[0]) });
+  })
+);
+
+router.post(
+  "/promote-students",
+  wrap(async (req, res) => {
+    const ids = (Array.isArray(req.body && req.body.studentIds) ? req.body.studentIds : []).map((v) => parseId(v, "student"));
+    const toClassId = parseId(req.body && req.body.toClassId, "class");
+    if (ids.length === 0) throw httpError(400, "Select at least one student.");
+    await assertClass(pool, toClassId, req.school.id);
+
+    const before = await pool.query(
+      "SELECT id, class_id FROM ecw_members WHERE id = ANY($1::int[]) AND role = 'student' AND school_id = $2 AND status <> 'pending'",
+      [ids, req.school.id]
+    );
+    if (before.rowCount === 0) throw httpError(404, "None of those students were found.");
+    await pool.query(
+      "UPDATE ecw_members SET class_id = $1 WHERE id = ANY($2::int[]) AND school_id = $3",
+      [toClassId, before.rows.map((s) => s.id), req.school.id]
+    );
+    before.rows.forEach((s) => cls.moveStudentToClass(s.id, s.class_id, toClassId));
+    emit(rooms.school(req.school.id), "member:updated", { role: "student", promoted: before.rowCount });
+    res.json({ success: true, moved: before.rowCount });
+  })
+);
+
+router.delete(
+  "/students/:id",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "student");
+    const r = await pool.query("DELETE FROM ecw_members WHERE id = $1 AND role = 'student' AND school_id = $2 RETURNING id", [id, req.school.id]);
+    if (r.rowCount === 0) throw httpError(404, "Student not found.");
+    emit(rooms.school(req.school.id), "member:removed", { id, role: "student" });
+    res.json({ success: true });
+  })
+);
+
+/* ------------------------------- announcements ------------------------------- */
+
+const serializeAnnouncement = (a) => ({ id: a.id, title: a.title, body: a.body, audience: a.audience, createdAt: a.created_at });
+
+router.get(
+  "/announcements",
+  wrap(async (req, res) => {
+    const r = await pool.query("SELECT * FROM ecw_announcements WHERE school_id = $1 ORDER BY created_at DESC LIMIT 100", [req.school.id]);
+    res.json({ success: true, announcements: r.rows.map(serializeAnnouncement) });
+  })
+);
+
+router.post(
+  "/announcements",
+  wrap(async (req, res) => {
+    const title = clean(req.body && req.body.title, 200);
+    const body = clean(req.body && req.body.body, 4000);
+    const audience = ["everyone", "teachers", "students"].includes(req.body && req.body.audience) ? req.body.audience : "everyone";
+    if (!title || !body) throw httpError(400, "Give the announcement a title and a message.");
+    const ins = await pool.query(
+      "INSERT INTO ecw_announcements (school_id, title, body, audience) VALUES ($1, $2, $3, $4) RETURNING *",
+      [req.school.id, title, body, audience]
+    );
+    const announcement = serializeAnnouncement(ins.rows[0]);
+    emit(rooms.school(req.school.id), "announcement:new", announcement);
+    res.status(201).json({ success: true, announcement });
+  })
+);
+
+router.delete(
+  "/announcements/:id",
+  wrap(async (req, res) => {
+    const id = parseId(req.params.id, "announcement");
+    const r = await pool.query("DELETE FROM ecw_announcements WHERE id = $1 AND school_id = $2 RETURNING id", [id, req.school.id]);
+    if (r.rowCount === 0) throw httpError(404, "Announcement not found.");
+    emit(rooms.school(req.school.id), "announcement:deleted", { id });
+    res.json({ success: true });
+  })
+);
+
+module.exports = router;

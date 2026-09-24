@@ -28,7 +28,9 @@ const allowedOrigins = (process.env.CLIENT_URLS || "")
   .filter(Boolean);
 const corsOrigin = allowedOrigins.length ? allowedOrigins : true;
 
-app.use(cors({ origin: corsOrigin }));
+// PATCH must be listed: the school admin dashboard uses PATCH for status/class
+// changes, and it is not one of the default simple methods for CORS preflight.
+app.use(cors({ origin: corsOrigin, methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] }));
 
 // The register form sends the logo as a base64 string. The default 100kb limit
 // rejects most logos, so registration failed with "PayloadTooLargeError".
@@ -48,7 +50,8 @@ app.use((req, res, next) => {
   next();
 });
 
-// Realtime channel used by the super admin dashboard (namespace: /superadmin).
+// Realtime channels: /superadmin (super admin dashboard) and /classroom
+// (teachers, students and the school admin dashboard).
 const io = new Server(server, {
   cors: { origin: corsOrigin, methods: ["GET", "POST"] },
 });

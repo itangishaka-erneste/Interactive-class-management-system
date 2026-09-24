@@ -50,18 +50,66 @@ class ApiError extends Error {
     this.status = status;
   }
 }
-
 function getSession() {
   try {
     const raw = localStorage.getItem(USER_SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = raw;
+    }
+
+    const findToken = (value, depth = 0) => {
+      if (!value || depth > 6) return null;
+
+      if (typeof value === 'string') {
+        const token = value.replace(/^Bearer\s+/i, '').trim();
+        return token.split('.').length === 3 ? token : null;
+      }
+
+      if (typeof value !== 'object') return null;
+
+      const tokenKeys = [
+        'token',
+        'accessToken',
+        'access_token',
+        'jwt',
+        'sessionToken',
+      ];
+
+      for (const key of tokenKeys) {
+        if (typeof value[key] === 'string' && value[key].trim()) {
+          return value[key].replace(/^Bearer\s+/i, '').trim();
+        }
+      }
+
+      for (const child of Object.values(value)) {
+        const token = findToken(child, depth + 1);
+        if (token) return token;
+      }
+
+      return null;
+    };
+
+    const token = findToken(parsed);
+    if (!token) return null;
+
+    return {
+      ...(typeof parsed === 'object' && parsed !== null ? parsed : {}),
+      token,
+    };
   } catch {
     return null;
   }
 }
 
-// The free Render tier can take ~30s to wake up, hence the generous default.
-async function api(path, { method = 'GET', body, timeoutMs = 60000 } = {}) {
+// Do not leave the whole dashboard on an apparently frozen loading screen
+// while the hosted API is asleep or unreachable. The error view provides a
+// retry action when the request times out.
+async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
   const session = getSession();
   const headers = { 'Content-Type': 'application/json' };
   if (session && session.token) headers.Authorization = `Bearer ${session.token}`;
@@ -1784,33 +1832,42 @@ export default function Teacher({ onSignOut }) {
   signOutRef.current = handleSignOut;
 
   // Every request goes through here so an expired session always ends in sign-out.
-  const request = useCallback(async (path, opts) => {
-    try {
-      return await api(path, opts);
-    } catch (e) {
-      if (e.status === 401) signOutRef.current();
-      throw e;
-    }
-  }, []);
+const request = useCallback((path, opts) => api(path, opts), []);
 
-  const load = useCallback(async () => {
-    const session = getSession();
-    if (!session || !session.token) { signOutRef.current(); return; }
-    setBoot('loading');
-    try {
-      const [meRes, notesRes, quizzesRes] = await Promise.all([request('/me'), request('/notes'), request('/quizzes')]);
-      setMe(meRes.teacher);
-      setAssignments(meRes.assignments);
-      setClasses(meRes.classes);
-      setNotes(notesRes.notes);
-      setQuizzes(quizzesRes.quizzes);
-      setBoot('ready');
-    } catch (e) {
-      if (e.status === 401) return;
-      setBootError(e.message);
-      setBoot('error');
-    }
-  }, [request]);
+const load = useCallback(async () => {
+  const session = getSession();
+
+  if (!session?.token) {
+    setBootError('Your login session is missing. Please sign in again.');
+    setBoot('error');
+    return;
+  }
+
+  setBoot('loading');
+  setBootError('');
+
+  try {
+    const [meRes, notesRes, quizzesRes] = await Promise.all([
+      request('/me'),
+      request('/notes'),
+      request('/quizzes'),
+    ]);
+
+    setMe(meRes.teacher || {});
+    setAssignments(meRes.assignments || []);
+    setClasses(meRes.classes || []);
+    setNotes(notesRes.notes || []);
+    setQuizzes(quizzesRes.quizzes || []);
+    setBoot('ready');
+  } catch (e) {
+    setBootError(
+      e.status === 401
+        ? 'Your session is invalid or expired. Please sign in again.'
+        : e.message || 'The teacher workspace could not load.'
+    );
+    setBoot('error');
+  }
+}, [request]);
 
   useEffect(() => { load(); }, [load]);
 

@@ -202,6 +202,14 @@ function readBearer(req) {
   return header.startsWith("Bearer ") ? header.slice(7) : "";
 }
 
+// One place for the "why can't this person get in" wording, so login, tokens
+// and sockets all say the same thing. Only 'active' members get in.
+function inactiveMessage(status) {
+  if (status === "pending") return "Your account is waiting for your school admin's approval. You'll be able to sign in once it is approved.";
+  if (status === "suspended") return "Your account has been suspended. Please contact your school admin.";
+  return "This account is not active.";
+}
+
 async function memberFromToken(token, role) {
   if (!token) throw httpError(401, "Please sign in.");
   let payload;
@@ -214,7 +222,7 @@ async function memberFromToken(token, role) {
   if (payload.role !== role) throw httpError(401, `Please sign in again as a ${role}.`);
   const m = await loadMember(payload.memberId);
   if (!m || m.role !== role) throw httpError(401, "This account no longer exists. Please sign in again.");
-  if (m.status !== "active") throw httpError(403, "This account is not active.");
+  if (m.status !== "active") throw httpError(403, inactiveMessage(m.status));
   if (m.school_status !== "active") throw httpError(403, "Your school is not active. Please contact your school admin.");
   return m;
 }
@@ -245,6 +253,9 @@ function tooManyAttempts(key, max = 15, windowMs = 60 * 1000) {
 function authHandlers(role) {
   return {
     register: wrap(async (req, res) => {
+      // The auth routes may be mounted without requireReady middleware. Wait
+      // for the classroom tables before querying them after a server restart.
+      await ready;
       if (tooManyAttempts(`reg:${req.ip}`)) throw httpError(429, "Too many attempts. Please wait a minute and try again.");
 
       const { credential, fullName, schoolId, schoolCode } = req.body || {};
@@ -265,16 +276,27 @@ function authHandlers(role) {
       if (s.rows[0].status !== "active") throw httpError(403, "This school is not active yet.");
 
       const existing = await pool.query(
-        "SELECT id FROM ecw_members WHERE role = $1 AND LOWER(email) = LOWER($2)",
+        "SELECT id, status FROM ecw_members WHERE role = $1 AND LOWER(email) = LOWER($2)",
         [role, google.email]
       );
-      if (existing.rowCount > 0) throw httpError(409, "An account already exists for this email. Please sign in instead.");
+      if (existing.rowCount > 0) {
+        throw httpError(
+          409,
+          existing.rows[0].status === "pending"
+            ? "Your request is already waiting for your school admin's approval."
+            : "An account already exists for this email. Please sign in instead."
+        );
+      }
 
+      let created;
       try {
-        await pool.query(
-          "INSERT INTO ecw_members (role, school_id, email, full_name) VALUES ($1, $2, $3, $4)",
+        // New sign-ups start as 'pending'. The school admin approves them from
+        // the dashboard (School_admin.js), which flips them to 'active'.
+        const ins = await pool.query(
+          "INSERT INTO ecw_members (role, school_id, email, full_name, status) VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
           [role, sid, google.email, name]
         );
+        created = ins.rows[0];
       } catch (err) {
         if (err.code === "23505") throw httpError(409, "An account already exists for this email. Please sign in instead.");
         throw err;
@@ -283,13 +305,19 @@ function authHandlers(role) {
       // Let an open school-admin dashboard know a new teacher/student just joined,
       // without it having to refresh or poll.
       try {
-        emit(rooms.school(sid), "member:registered", { role, fullName: name, email: google.email });
+        emit(rooms.school(sid), "member:registered", { id: created.id, role, fullName: name, email: google.email, status: "pending" });
       } catch { /* realtime is best-effort */ }
 
-      res.status(201).json({ success: true, message: "Account created. You can sign in now." });
+      res.status(201).json({
+        success: true,
+        pending: true,
+        message: "Request sent. Your school admin must approve your account before you can sign in.",
+      });
     }),
 
     login: wrap(async (req, res) => {
+      // Avoid a first-login race while the startup schema is being created.
+      await ready;
       if (tooManyAttempts(`login:${req.ip}`, 30)) throw httpError(429, "Too many attempts. Please wait a minute and try again.");
 
       const { credential } = req.body || {};
@@ -302,7 +330,7 @@ function authHandlers(role) {
       );
       if (r.rowCount === 0) throw httpError(404, "No account found for this email. Please register first.");
       const m = r.rows[0];
-      if (m.status !== "active") throw httpError(403, "This account is not active.");
+      if (m.status !== "active") throw httpError(403, inactiveMessage(m.status));
       if (m.school_status !== "active") throw httpError(403, "Your school is not active. Please contact your school admin.");
 
       res.json({ success: true, token: signMemberToken(m), user: serializeMember(m) });

@@ -42,59 +42,30 @@ import {
    HOW SIGN-IN WORKS NOW
    - Every "Continue with Google" button is the real Google Identity Services
      button.
-   - School admin and super admin: the Google token is sent to the server, which
-     verifies it with Google and decides who gets in. No school code and no
-     confirmation code are needed any more.
+   - School admin and super admin: the Google token is sent to the server,
+     which verifies it with Google and decides who gets in.
        * School admin -> must be the Google email the school registered with,
          and the school must be approved by the super admin.
        * Super admin  -> must be the single email set as SUPERADMIN_EMAIL on
          the server.
-   - Students and teachers still keep their accounts in this browser's
-     localStorage (there is no student/teacher backend yet), but the school
-     list comes from the server (approved schools only) and the school code is
-     checked by the server.
+   - Students and teachers are now ALSO checked against the real server
+     (POST /api/teacher/login|register and /api/student/login|register).
+     There is no more local/fake account table and no more client-minted
+     tokens: the token used everywhere afterwards (including by
+     Teacher.jsx's /api/teacher/* calls) is the real session token the
+     server issues. A class/subject the teacher adds at sign-in is saved
+     through POST /api/teacher/assignments, the same endpoint the teacher
+     dashboard's Settings page uses.
    ============================================================================ */
 
 const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "";
 const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:5000";
 
-/* ============================================================================
-   LOCAL STORAGE (student / teacher accounts only)
-   ============================================================================ */
-
-const DB_USERS_KEY = "ecw_db_users";
-
-// Classes available for a teacher to pick from. In a real system this would
-// be created by each school; here it's shared across all schools for demo
-// purposes.
-const MOCK_CLASSES = [
-  { id: "cls_1", display_name: "Senior 1 A" },
-  { id: "cls_2", display_name: "Senior 1 B" },
-  { id: "cls_3", display_name: "Senior 2 A" },
-  { id: "cls_4", display_name: "Senior 3 A" },
-  { id: "cls_5", display_name: "Senior 4 MCB" },
-];
-
-function readDb(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-function writeDb(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
-}
-function getUsers() {
-  return readDb(DB_USERS_KEY, []);
-}
-function saveUsers(users) {
-  writeDb(DB_USERS_KEY, users);
-}
-function randomId(prefix) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
+// Backend mount point for each member role. Both are expected to expose the
+// same shape as teacher.js: POST /register, POST /login (both open), and a
+// GET /me that requires "Authorization: Bearer <token>" and returns
+// { success, teacher|student, assignments?, classes? }.
+const MEMBER_API_PATH = { teacher: "teacher", student: "student" };
 
 // localStorage keys the various session tokens are kept under, so a page
 // refresh on any dashboard doesn't lose the sign-in.
@@ -173,10 +144,8 @@ function loadGoogleScript() {
   return gsiScriptPromise;
 }
 
-// The real "Continue with Google" button. `onSignedIn` receives
 // { name, email, picture, credential } where `credential` is the Google ID token
-// the server re-verifies.
-function GoogleAuthButton({ onSignedIn, text = "continue_with" }) {
+function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
   const containerRef = useRef(null);
   const handlerRef = useRef(onSignedIn);
   handlerRef.current = onSignedIn;
@@ -397,7 +366,7 @@ function AuthModal({
               {googleAccount ? (
                 <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
               ) : (
-                <GoogleAuthButton onSignedIn={onGoogleSignedIn} />
+                <GoogleSignInButton onSignedIn={onGoogleSignedIn} />
               )}
 
               {autoSignIn ? (
@@ -439,7 +408,7 @@ function AuthModal({
                 {googleAccount ? (
                   <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
                 ) : (
-                  <GoogleAuthButton onSignedIn={onGoogleSignedIn} text="signup_with" />
+                  <GoogleSignInButton onSignedIn={onGoogleSignedIn} text="signup_with" />
                 )}
                 <p className="text-[10px] text-neutral-400 mt-1">
                   We only take your name and email from Google — nothing else, and no password is stored.
@@ -505,8 +474,8 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
         </span>
         <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
         <p className="text-xs text-neutral-500 leading-relaxed mb-5">
-          Your {roleLabel.toLowerCase()} account is being reviewed for {schoolName || "your school"}.
-          This only takes a moment — you'll be able to sign in with the same Google account right after.
+          Your {roleLabel.toLowerCase()} account has been sent to {schoolName || "your school"} for approval.
+          Once approved, sign in with the same Google account to continue.
         </p>
         <button
           type="button" onClick={onClose}
@@ -522,12 +491,16 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
 // ------------------------------------------------------------------
 // Teacher classes/subjects step — shown right after a teacher's Google
 // sign-in succeeds, before anything navigates to the dashboard.
+// Classes come from the real server (returned by GET /api/teacher/me as
+// part of the login flow), and any class/subject the teacher adds is saved
+// through the real POST /api/teacher/assignments endpoint.
 // ------------------------------------------------------------------
 function TeacherClassStepModal({
   step, setStep, onPickExisting, onSwitchToAdd, onBackToPick, onSubmitAdd, onClose,
-  onToggleClass, onToggleAllClasses, onToggleSubject, onToggleAllSubjects, onAddCustomSubject,
+  onToggleClass, onToggleAllClasses, onAddCustomClass,
+  onToggleSubject, onToggleAllSubjects, onAddCustomSubject,
 }) {
-  const { mode, assignments, classes, classesLoading, form, submitting, error } = step;
+  const { mode, assignments, classes, form, submitting, error } = step;
   const allSubjectChoices = [...new Set([...SUBJECT_OPTIONS, ...form.subjects])];
   const allClassesSelected = classes.length > 0 && classes.every((c) => form.classIds.has(c.id));
   const allSubjectsSelected = allSubjectChoices.length > 0 && allSubjectChoices.every((s) => form.subjects.has(s));
@@ -598,15 +571,15 @@ function TeacherClassStepModal({
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-[11px] font-bold text-neutral-600">Classes you teach</label>
-                  <button type="button" onClick={onToggleAllClasses} className="text-[10px] font-bold text-[#178754] hover:underline">
-                    {allClassesSelected ? "Clear all" : "Select all"}
-                  </button>
+                  {classes.length > 0 && (
+                    <button type="button" onClick={onToggleAllClasses} className="text-[10px] font-bold text-[#178754] hover:underline">
+                      {allClassesSelected ? "Clear all" : "Select all"}
+                    </button>
+                  )}
                 </div>
                 <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2.5 flex flex-col gap-1.5">
-                  {classesLoading ? (
-                    <p className="text-[11px] text-neutral-400 px-1 py-1">Loading classes…</p>
-                  ) : classes.length === 0 ? (
-                    <p className="text-[11px] text-neutral-400 px-1 py-1">No classes available yet.</p>
+                  {classes.length === 0 ? (
+                    <p className="text-[11px] text-neutral-400 px-1 py-1">No classes yet — add one below.</p>
                   ) : classes.map((c) => (
                     <label key={c.id} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
                       <input
@@ -614,9 +587,21 @@ function TeacherClassStepModal({
                         onChange={() => onToggleClass(c.id)}
                         className="w-3.5 h-3.5 accent-[#178754] shrink-0"
                       />
-                      {c.display_name}
+                      {c.name}
                     </label>
                   ))}
+                </div>
+                <div className="flex gap-2 mt-2">
+                  <input
+                    value={form.customClass}
+                    onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customClass: e.target.value } } : s))}
+                    placeholder="e.g. S4 MCB"
+                    className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAddCustomClass(); } }}
+                  />
+                  <button type="button" onClick={onAddCustomClass} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">
+                    Add
+                  </button>
                 </div>
               </div>
 
@@ -780,7 +765,7 @@ export default function EasyClassWork() {
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok || !data.success) {
-        setFormError(data.error || "Sign-in failed. Please try again.");
+        setFormError(data.error || data.message || "Sign-in failed. Please try again.");
         setGoogleAccount(null);
         return;
       }
@@ -797,6 +782,67 @@ export default function EasyClassWork() {
     } catch {
       setFormError("Could not reach the server. Check your connection and try again.");
       setGoogleAccount(null);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Student / teacher sign-in.
+  // Hits the REAL backend (mounted at /api/teacher and /api/student), the
+  // same server Teacher.jsx talks to. The token stored afterwards is the
+  // server's real session token, so every later /api/teacher/* call
+  // succeeds instead of bouncing back to "/" with a 401.
+  // ------------------------------------------------------------------
+  async function signInMember(role, account) {
+    setFormError("");
+    setAuthSubmitting(true);
+    const base = MEMBER_API_PATH[role];
+
+    try {
+      const res = await fetch(`${API_BASE}/api/${base}/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: account.credential }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok || !data.success) {
+        setFormError(
+          data.message || data.error ||
+          "No approved account found for this email. Register first, or wait for your school to approve you."
+        );
+        return;
+      }
+
+      const token = data.token;
+      if (!token) {
+        setFormError("The server did not return a session token. Please try again.");
+        return;
+      }
+
+      // Hydrate the full profile with the real, server-issued token — this
+      // is exactly what Teacher.jsx does on every load, so doing it here
+      // too confirms the token actually works before we navigate anywhere.
+      const meRes = await fetch(`${API_BASE}/api/${base}/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const me = await meRes.json().catch(() => ({}));
+      if (!meRes.ok || !me.success) {
+        setFormError(me.message || "Signed in, but your profile could not be loaded. Please try again.");
+        return;
+      }
+
+      localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token }));
+      setAuthView(null);
+
+      if (role === "teacher") {
+        startTeacherClassStep(token, me.teacher, me.assignments || [], me.classes || []);
+      } else {
+        handleNavigate(`/dashboard/${role}`, { token, email: me.student?.email, name: me.student?.fullName });
+      }
+    } catch {
+      setFormError("Could not reach the server. Check your connection and try again.");
     } finally {
       setAuthSubmitting(false);
     }
@@ -820,45 +866,38 @@ export default function EasyClassWork() {
   };
 
   // ------------------------------------------------------------------
-  // Teacher classes/subjects step — helpers (all local now)
+  // Teacher classes/subjects step
+  // `classes` comes straight from GET /api/teacher/me (the same list the
+  // dashboard's Settings page shows), so nothing here is invented client-side.
   // ------------------------------------------------------------------
 
-  const loadTeacherClasses = () => {
-    setTeacherStep((s) => (s ? { ...s, classesLoading: true } : s));
-    setTimeout(() => {
-      setTeacherStep((s) => (s ? { ...s, classes: MOCK_CLASSES, classesLoading: false } : s));
-    }, 400);
-  };
+  const blankAddForm = () => ({ classIds: new Set(), subjects: new Set(), customSubject: "", customClass: "" });
 
-  const blankAddForm = () => ({ classIds: new Set(), subjects: new Set(), customSubject: "" });
-
-  const startTeacherClassStep = (token, user, assignments) => {
+  const startTeacherClassStep = (token, teacher, assignments, classes) => {
     if (assignments.length === 0) {
-      setTeacherStep({ token, user, mode: "add", assignments, classes: [], classesLoading: true, form: blankAddForm(), submitting: false, error: "" });
-      loadTeacherClasses();
+      setTeacherStep({ token, teacher, mode: "add", assignments, classes, form: blankAddForm(), submitting: false, error: "" });
     } else {
-      setTeacherStep({ token, user, mode: "pick", assignments, classes: [], classesLoading: false, form: blankAddForm(), submitting: false, error: "" });
+      setTeacherStep({ token, teacher, mode: "pick", assignments, classes, form: blankAddForm(), submitting: false, error: "" });
     }
   };
 
-  const completeTeacherLogin = (token, user, assignments) => {
+  const completeTeacherLogin = (token, teacher, assignments) => {
     setTeacherStep(null);
     handleNavigate("/dashboard/teacher", {
       token,
-      email: user.email,
-      name: user.fullName,
-      assignments: assignments.map((a) => ({ id: a.id, classId: a.classId, className: a.className, subject: a.subject })),
+      email: teacher?.email,
+      name: teacher?.fullName,
+      assignments,
     });
   };
 
   const handlePickExisting = (assignments) => {
     if (!teacherStep) return;
-    completeTeacherLogin(teacherStep.token, teacherStep.user, assignments);
+    completeTeacherLogin(teacherStep.token, teacherStep.teacher, assignments);
   };
 
   const handleSwitchTeacherStepToAdd = () => {
     setTeacherStep((s) => (s ? { ...s, mode: "add", error: "", form: blankAddForm() } : s));
-    if (teacherStep && teacherStep.classes.length === 0) loadTeacherClasses();
   };
 
   const handleBackToPickAssignment = () => setTeacherStep((s) => (s ? { ...s, mode: "pick", error: "" } : s));
@@ -878,6 +917,23 @@ export default function EasyClassWork() {
       const allSelected = s.classes.length > 0 && s.classes.every((c) => s.form.classIds.has(c.id));
       const next = allSelected ? new Set() : new Set(s.classes.map((c) => c.id));
       return { ...s, form: { ...s.form, classIds: next } };
+    });
+  };
+
+  // A teacher can type a class name that doesn't exist yet — the server's
+  // POST /api/teacher/assignments creates it automatically, so we only need
+  // a local placeholder to check it in the UI before saving.
+  const handleAddCustomClass = () => {
+    setTeacherStep((s) => {
+      if (!s) return s;
+      const label = s.form.customClass.trim();
+      if (!label) return s;
+      const existing = s.classes.find((c) => c.name.toLowerCase() === label.toLowerCase());
+      const cls = existing || { id: `new:${label}`, name: label };
+      const classes = existing ? s.classes : [...s.classes, cls];
+      const classIds = new Set(s.form.classIds);
+      classIds.add(cls.id);
+      return { ...s, classes, form: { ...s.form, classIds, customClass: "" } };
     });
   };
 
@@ -911,9 +967,11 @@ export default function EasyClassWork() {
     });
   };
 
-  // Saves the chosen class/subject pairs onto the teacher's local user
-  // record, then continues to the dashboard.
-  const handleSubmitNewAssignment = (e) => {
+  // Saves every chosen class/subject pair through the REAL
+  // POST /api/teacher/assignments endpoint (the same one Settings uses),
+  // authenticated with the real session token, then continues to the
+  // dashboard.
+  const handleSubmitNewAssignment = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!teacherStep) return;
     const { classIds, subjects } = teacherStep.form;
@@ -921,24 +979,32 @@ export default function EasyClassWork() {
       setTeacherStep((s) => (s ? { ...s, error: "Pick at least one class and one subject." } : s));
       return;
     }
-    const newAssignments = [...classIds].flatMap((classId) =>
-      [...subjects].map((subject) => {
-        const cls = teacherStep.classes.find((c) => c.id === classId);
-        return { id: randomId("asg"), classId, className: cls?.display_name || classId, subject };
-      })
-    );
+
+    const classNames = [...classIds]
+      .map((id) => teacherStep.classes.find((c) => c.id === id)?.name)
+      .filter(Boolean);
+    const pairs = classNames.flatMap((className) => [...subjects].map((subject) => ({ className, subject })));
 
     setTeacherStep((s) => (s ? { ...s, submitting: true, error: "" } : s));
-    setTimeout(() => {
-      const users = getUsers();
-      const idx = users.findIndex((u) => u.id === teacherStep.user.id);
-      const merged = [...teacherStep.assignments, ...newAssignments];
-      if (idx >= 0) {
-        users[idx] = { ...users[idx], assignments: merged };
-        saveUsers(users);
+
+    try {
+      let latestAssignments = teacherStep.assignments;
+      for (const pair of pairs) {
+        const res = await fetch(`${API_BASE}/api/teacher/assignments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${teacherStep.token}` },
+          body: JSON.stringify(pair),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || `Could not add ${pair.className} · ${pair.subject}.`);
+        }
+        latestAssignments = data.assignments;
       }
-      completeTeacherLogin(teacherStep.token, teacherStep.user, merged);
-    }, 500);
+      completeTeacherLogin(teacherStep.token, teacherStep.teacher, latestAssignments);
+    } catch (err) {
+      setTeacherStep((s) => (s ? { ...s, submitting: false, error: err.message } : s));
+    }
   };
 
   const closeTeacherStep = () => {
@@ -956,44 +1022,19 @@ export default function EasyClassWork() {
 
     if (!googleAccount) { setFormError("Continue with Google first."); return; }
 
-    // Admin roles are checked by the server.
     if (isAdminRole(role)) {
       signInAdmin(role, googleAccount);
-      return;
+    } else {
+      signInMember(role, googleAccount);
     }
-
-    // Student / teacher — matched against the local "users" table.
-    setAuthSubmitting(true);
-    setTimeout(() => {
-      const users = getUsers();
-      const user = users.find((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
-
-      if (!user) {
-        setFormError("No account found for this email. Please register first.");
-        setAuthSubmitting(false);
-        return;
-      }
-      if (user.status === "pending") {
-        setFormError("Your account is still being reviewed. Please try again shortly.");
-        setAuthSubmitting(false);
-        return;
-      }
-
-      const token = randomId("tok");
-      localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token, user }));
-      setAuthSubmitting(false);
-      setAuthView(null);
-      if (role === "teacher") {
-        startTeacherClassStep(token, user, user.assignments || []);
-      } else {
-        handleNavigate(`/dashboard/${role}`, { token, email: user.email, name: user.fullName });
-      }
-    }, 500);
   };
 
   // ------------------------------------------------------------------
   // Student / teacher registration
-  // The school code is checked by the server against the approved school.
+  // The school code is checked by the server, then the account itself is
+  // created server-side (pending the school's approval) via
+  // POST /api/{role}/register. There is no more client-side auto-approve:
+  // approval must come from the school admin, same as school approval does.
   // ------------------------------------------------------------------
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
@@ -1010,56 +1051,42 @@ export default function EasyClassWork() {
     setAuthSubmitting(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/schools/verify-code`, {
+      const verifyRes = await fetch(`${API_BASE}/api/schools/verify-code`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ schoolId: school, schoolCode: schoolCode.trim() }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.success) {
-        setFormError(data.error || "That school code doesn't match the selected school.");
+      const verifyData = await verifyRes.json().catch(() => ({}));
+      if (!verifyRes.ok || !verifyData.success) {
+        setFormError(verifyData.error || verifyData.message || "That school code doesn't match the selected school.");
         setAuthSubmitting(false);
         return;
       }
+
+      const res = await fetch(`${API_BASE}/api/${MEMBER_API_PATH[role]}/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          credential: googleAccount.credential,
+          fullName,
+          schoolId: school,
+          schoolCode: schoolCode.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) {
+        setFormError(data.message || data.error || "Could not register. Please check your details and try again.");
+        setAuthSubmitting(false);
+        return;
+      }
+
+      setAuthSubmitting(false);
+      setAuthView(null);
+      setPendingApproval({ roleLabel: ROLE_CONFIG[role].label, schoolName: chosenSchool.name });
     } catch {
       setFormError("Could not reach the server. Check your connection and try again.");
       setAuthSubmitting(false);
-      return;
     }
-
-    const users = getUsers();
-    const alreadyExists = users.some((u) => u.role === role && u.email.toLowerCase() === googleAccount.email.toLowerCase());
-    if (alreadyExists) {
-      setFormError("An account already exists for this email. Please sign in instead.");
-      setAuthSubmitting(false);
-      return;
-    }
-
-    const newUser = {
-      id: randomId("usr"),
-      role,
-      fullName,
-      email: googleAccount.email,
-      googleSub: googleAccount.googleSub,
-      schoolId: school,
-      status: "pending",
-      assignments: [],
-    };
-    users.push(newUser);
-    saveUsers(users);
-
-    setAuthSubmitting(false);
-    setAuthView(null);
-    setPendingApproval({ roleLabel: ROLE_CONFIG[role].label, schoolName: chosenSchool.name });
-
-    // Student/teacher accounts still live in this browser only, so there is no
-    // admin panel to click "approve". Auto-approve shortly after so the sign-in
-    // flow works.
-    setTimeout(() => {
-      const list = getUsers();
-      const idx = list.findIndex((u) => u.id === newUser.id);
-      if (idx >= 0) { list[idx].status = "approved"; saveUsers(list); }
-    }, 2500);
   };
 
   return (
@@ -1132,6 +1159,7 @@ export default function EasyClassWork() {
           onClose={closeTeacherStep}
           onToggleClass={handleToggleClass}
           onToggleAllClasses={handleToggleAllClasses}
+          onAddCustomClass={handleAddCustomClass}
           onToggleSubject={handleToggleSubject}
           onToggleAllSubjects={handleToggleAllSubjects}
           onAddCustomSubject={handleAddCustomSubject}
