@@ -1625,7 +1625,7 @@ export default function EasyClassWork() {
               { name: "Erneste Itangishaka", role: "Founder and lead engineer", ring: "ring-emerald-100", tint: "#178754" },
               { name: "Aline Umurerwa", role: "Product designer", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
               { name: "Mukunzi Joseph", role: "Backend Developer", ring: "ring-emerald-100", tint: "#178754" },
-              { name: "Ngendahimana Joseph", role: "Curriculum lead", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
+              { name: "Mutangana Justin", role: "Curriculum lead", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
             ].map((m) => (
               <div key={m.name} className="flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-full sm:w-[45%] lg:w-[22%]">
                 <span className={`w-24 h-24 rounded-full bg-white flex items-center justify-center mx-auto mb-4 ring-4 ${m.ring} shadow-sm`}>

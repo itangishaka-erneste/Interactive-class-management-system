@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import logo from './assets/esms.jpg';
 import {
-  User, GraduationCap, Filter, BookOpen, Share2,
+  User, Filter, BookOpen, Share2,
   Users, LogOut, Settings, Plus,
   Eye, Pencil, EyeOff, Trash2, X,
   ChevronDown, Clock, CheckCircle2, Circle, Menu, ArrowLeft,
@@ -41,7 +42,12 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 
 /* ------------------------------------ API ----------------------------------- */
 
-const API_BASE = (typeof window !== 'undefined' && window.ECW_API_BASE) || 'https://easy-class-work-records.onrender.com';
+// Keep authentication and dashboard requests on the same backend. A deployed
+// frontend may provide the API explicitly; otherwise use the current origin
+// instead of silently pointing at a different Render service.
+const API_BASE = (typeof window !== 'undefined' && window.ECW_API_BASE)
+  || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE)
+  || (typeof window !== 'undefined' ? window.location.origin : '');
 const USER_SESSION_KEY = 'ecw_user_session';
 
 class ApiError extends Error {
@@ -190,7 +196,8 @@ function GlobalStyle() {
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
-      * { box-sizing: border-box; }
+      * { box-sizing: border-box; border-radius: 6px !important; }
+      .td-spin, [style*="border-radius: 50%"] { border-radius: 50% !important; }
       .td-root { font-family: 'Inter', system-ui, sans-serif; background:#fff; }
       .td-heading { font-family: 'Poppins', system-ui, sans-serif; }
       @keyframes tdShimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
@@ -588,8 +595,12 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 16px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(135deg, ${t.blue}, ${t.green})`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <GraduationCap size={16} color="#fff" strokeWidth={2.2} />
-          </div>
+
+<img
+  src={logo}
+  alt="Easy Class logo"
+  style={{ width: 50, height: 50, flexShrink: 0 }}
+/>          </div>
           <div>
             <span className="td-heading" style={{ fontSize: 14.5, fontWeight: 700, color: t.text, display: 'block', letterSpacing: -0.2 }}>Easy Class</span>
             <span style={{ fontSize: 10.5, color: t.subtext }}>Teacher workspace</span>

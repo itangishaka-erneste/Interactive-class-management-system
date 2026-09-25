@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { io } from "socket.io-client";
 import {
   Home,
   BookOpen,
@@ -44,6 +45,12 @@ const RED_SOFT = "#FEECEC";
    ============================================================================ */
 const API_BASE = (typeof window !== "undefined" && window.ECW_API_BASE) || "https://easy-class-work-records.onrender.com";
 const USER_SESSION_KEY = "ecw_user_session";
+
+// FIX: this used to be missing entirely. setupClassroomSocket(io) on the
+// backend mounts a Socket.IO namespace the same way Superadmin.js does for
+// "/superadmin" -- named "/classroom" to match. If your classroom.js uses a
+// different namespace string, change it here (and in teacher.jsx) to match.
+const CLASSROOM_SOCKET_NAMESPACE = "/classroom";
 
 function getSession() {
   try {
@@ -651,15 +658,39 @@ export default function Student({ onSignOut }) {
   const [studentName, setStudentName] = useState("");
   const [notes, setNotes] = useState([]);
   const [quizzes, setQuizzes] = useState([]);
+  const [live, setLive] = useState(false);
 
   const [openNote, setOpenNote] = useState(null);
   const [takingQuizId, setTakingQuizId] = useState(null);
 
-  const handleSignOut = () => {
+  const handleSignOut = useCallback(() => {
     localStorage.removeItem(USER_SESSION_KEY);
     if (onSignOut) onSignOut();
     else window.location.href = "/";
-  };
+  }, [onSignOut]);
+  const signOutRef = useRef(handleSignOut);
+  signOutRef.current = handleSignOut;
+
+  // Split out of loadAll so a realtime "note published" / "quiz published"
+  // event can refresh just that one list, without also refetching /me or
+  // interrupting whatever the student happens to be doing (e.g. mid-quiz).
+  const refreshNotes = useCallback(async () => {
+    try {
+      const n = await apiFetch("/api/student/notes");
+      setNotes(n.notes || []);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }, [toast]);
+
+  const refreshQuizzes = useCallback(async () => {
+    try {
+      const q = await apiFetch("/api/student/quizzes");
+      setQuizzes(q.quizzes || []);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }, [toast]);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -669,22 +700,67 @@ export default function Student({ onSignOut }) {
     } catch (err) {
       toast(err.message, "error");
     }
-    try {
-      const n = await apiFetch("/api/student/notes");
-      setNotes(n.notes || []);
-    } catch (err) {
-      toast(err.message, "error");
-    }
-    try {
-      const q = await apiFetch("/api/student/quizzes");
-      setQuizzes(q.quizzes || []);
-    } catch (err) {
-      toast(err.message, "error");
-    }
+    await Promise.all([refreshNotes(), refreshQuizzes()]);
     setLoading(false);
-  }, [toast]);
+  }, [toast, refreshNotes, refreshQuizzes]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ---------------------------------------------------------------------
+  // Realtime connection to the classroom namespace.
+  //
+  // This is deliberately separate from the login session. A dropped socket
+  // (phone screen locks, wifi hiccup, laptop sleeps, server restarts) must
+  // NEVER sign the student out — Socket.IO's own reconnection logic keeps
+  // quietly retrying in the background, and `live` below just reflects
+  // connection status in the UI. The ONLY things that end the session are:
+  //   1. The student pressing "Sign Out".
+  //   2. The server explicitly telling us the token itself is invalid or
+  //      expired (a REST 401, or a socket "unauthorized" connect_error).
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    const session = getSession();
+    if (!session?.token) return undefined;
+
+    const socket = io(`${API_BASE}${CLASSROOM_SOCKET_NAMESPACE}`, {
+      auth: { token: session.token },
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
+    });
+
+    socket.on("connect", () => setLive(true));
+    socket.on("disconnect", () => setLive(false)); // temporary — not a sign-out
+    socket.on("connect_error", (err) => {
+      setLive(false);
+      if (err?.message === "unauthorized") {
+        localStorage.removeItem(USER_SESSION_KEY);
+        toast("Your session expired. Please sign in again.", "error");
+        signOutRef.current();
+      }
+    });
+
+    // A teacher published/updated/unpublished a note in the student's class.
+    socket.on("note:changed", (info) => {
+      if (info.action !== "deleted" && info.action !== "unpublished") {
+        toast(`New from your teacher: "${info.title}"`, "success");
+      }
+      refreshNotes();
+    });
+
+    // A teacher published/updated/unpublished a quiz in the student's class.
+    socket.on("quiz:changed", (info) => {
+      if (info.action === "published") toast(`New quiz available: "${info.title}"`, "success");
+      else if (info.action === "updated") toast(`Quiz updated: "${info.title}"`, "success");
+      refreshQuizzes();
+    });
+
+    return () => {
+      socket.disconnect();
+      setLive(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast, refreshNotes, refreshQuizzes]);
 
   const pendingQuizzes = quizzes.filter((q) => q.status === "available" || q.status === "in_progress" || q.status === "upcoming");
   const doneQuizzes = quizzes.filter((q) => q.status === "completed");
@@ -706,8 +782,8 @@ export default function Student({ onSignOut }) {
         <QuizTakerModal
           quizId={takingQuizId}
           toast={toast}
-          onClose={() => { setTakingQuizId(null); loadAll(); }}
-          onFinished={() => { loadAll(); }}
+          onClose={() => { setTakingQuizId(null); refreshQuizzes(); }}
+          onFinished={() => { refreshQuizzes(); }}
         />
       )}
 
@@ -732,6 +808,14 @@ export default function Student({ onSignOut }) {
             </h1>
           </div>
           <div className="flex items-center shrink-0 gap-2">
+            <span
+              title={live ? "Connected. New notes and quizzes appear instantly." : "Not connected. Pull to refresh."}
+              className="hidden sm:inline-flex items-center gap-1.5 text-[10.5px] font-bold"
+              style={{ color: live ? GREEN : "#9CA3AF" }}
+            >
+              <span className="inline-block w-[6px] h-[6px] rounded-full" style={{ background: live ? GREEN : "#9CA3AF" }} />
+              {live ? "Live" : "Offline"}
+            </span>
             <button
               type="button"
               onClick={() => setLang((l) => (l === "en" ? "rw" : "en"))}

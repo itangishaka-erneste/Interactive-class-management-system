@@ -55,13 +55,44 @@ const STATUS_META = {
   pending_payment: { bg: t.orangeSoft, color: t.orange, label: 'Pending payment' },
 };
 
-// Backend already returns { id, name, email, phone, code, status, paymentStatus, createdAt, codeSentAt }.
+// FIX: the backend (serializeSchool in Superadmin.js) only ever returns a
+// relative upload path such as "/uploads/logos/<file>.png" for a school that
+// uploaded a logo file (an absolute http(s)/data/blob URL is passed through
+// unchanged if the school registered with a link instead). A relative path
+// has to be resolved against the API server's own origin, or the browser
+// looks for it on the FRONTEND's own origin instead and the <img> silently
+// 404s, which is why every school showed the default building icon instead
+// of its real logo. This mirrors the resolveLogoUrl() helper Register.jsx
+// already uses for the exact same reason.
+function resolveLogoUrl(value) {
+  const logo = String(value || '').trim();
+  if (!logo) return '';
+  if (/^(data:|blob:|https?:\/\/)/i.test(logo)) return logo;
+  if (logo.startsWith('/')) return `${API_BASE.replace(/\/$/, '')}${logo}`;
+  return logo;
+}
+
+// Backend already returns { id, name, email, phone, code, status, paymentStatus, logoUrl, createdAt, codeSentAt }.
 const mapSchool = (s) => ({
   ...s,
+  logo: resolveLogoUrl(s.logo || s.logoUrl || s.logoURL || s.schoolLogo || s.image || s.imageUrl || ''),
   status: String(s.status).startsWith('pending')
     ? (s.paymentStatus ? 'pending_review' : 'pending_payment')
     : s.status,
 });
+
+function SchoolLogo({ school, size = 32 }) {
+  const [failed, setFailed] = useState(false);
+  const src = school?.logo;
+  // Re-arm the fallback whenever the logo itself changes (e.g. after a
+  // school's logo is updated), instead of getting stuck on a stale failure.
+  useEffect(() => { setFailed(false); }, [src]);
+  return (
+    <div style={{ width: size, height: size, borderRadius: 8, background: t.blueSoft, border: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>
+      {src && !failed ? <img src={src} alt={`${school?.name || 'School'} logo`} onError={() => setFailed(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <Building2 size={size * 0.45} color={t.blue} />}
+    </div>
+  );
+}
 
 // fetch() that gives up after `ms` so the screen never spins forever.
 async function fetchWithTimeout(url, options = {}, ms = 25000) {
@@ -202,6 +233,33 @@ function SearchBox({ value, onChange, placeholder }) {
     </div>
   );
 }
+
+// Shows up to `pageSize` items at a time with a compact "‹ 1/3 ›" pager
+// instead of letting a long list wrap into multiple lines. Used for the
+// announcement audience list (both the picker and the saved display),
+// which can otherwise grow to one badge/button per school.
+function PagedChips({ items, pageSize = 4, renderItem, gap = 7 }) {
+  const [page, setPage] = useState(0);
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  const clamped = Math.min(page, totalPages - 1);
+  useEffect(() => { if (page !== clamped) setPage(clamped); }, [clamped]); // eslint-disable-line react-hooks/exhaustive-deps
+  const slice = items.slice(clamped * pageSize, clamped * pageSize + pageSize);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap, flexWrap: 'wrap' }}>
+      {slice.map(renderItem)}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <button type="button" className="pa-btn" aria-label="Previous" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={clamped === 0}
+            style={{ width: 22, height: 22, borderRadius: 6, border: `1px solid ${t.border}`, background: '#fff', color: clamped === 0 ? t.faint : t.text, cursor: clamped === 0 ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }}>‹</button>
+          <span style={{ fontSize: 10.5, color: t.faint, fontWeight: 700, minWidth: 26, textAlign: 'center' }}>{clamped + 1}/{totalPages}</span>
+          <button type="button" className="pa-btn" aria-label="Next" onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={clamped === totalPages - 1}
+            style={{ width: 22, height: 22, borderRadius: 6, border: `1px solid ${t.border}`, background: '#fff', color: clamped === totalPages - 1 ? t.faint : t.text, cursor: clamped === totalPages - 1 ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }}>›</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Table({ columns, rows, renderRow, empty }) {
   if (rows.length === 0) return empty;
   return (
@@ -450,7 +508,7 @@ function Overview({ schools, go, loading }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {schools.slice(0, 5).map(s => (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: t.panel, borderRadius: 8, padding: '9px 12px', flexWrap: 'wrap', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><Building2 size={14} color={t.blue} /><span style={{ fontSize: 12.5, fontWeight: 600, color: t.text }}>{s.name}</span></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><SchoolLogo school={s} size={30} /><span style={{ fontSize: 12.5, fontWeight: 600, color: t.text }}>{s.name}</span></div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><StatusBadge status={s.status} /><span style={{ fontSize: 11, color: t.subtext }}>{fmtDate(s.createdAt)}</span></div>
               </div>
             ))}
@@ -472,9 +530,12 @@ function SchoolDetailModal({ school, onClose, busy, actions }) {
     <Modal onClose={onClose} width={500}>
       <div style={{ padding: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
-          <div style={{ minWidth: 0 }}>
-            <h3 className="pa-heading" style={{ margin: 0, fontSize: 17, color: t.text }}>{school.name}</h3>
-            <p style={{ margin: '4px 0 0', fontSize: 12, color: t.subtext }}>{school.code} · Registered {fmtDate(school.createdAt)}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <SchoolLogo school={school} size={44} />
+            <div style={{ minWidth: 0 }}>
+              <h3 className="pa-heading" style={{ margin: 0, fontSize: 17, color: t.text }}>{school.name}</h3>
+              <p style={{ margin: '4px 0 0', fontSize: 12, color: t.subtext }}>{school.code} · Registered {fmtDate(school.createdAt)}</p>
+            </div>
           </div>
           <IconBtn icon={X} onClick={onClose} title="Close" />
         </div>
@@ -548,7 +609,7 @@ function SchoolsPage({ schools, loading, onView, actions, busyId }) {
           empty={<EmptyState icon={Building2} title={schools.length === 0 ? 'No schools registered yet' : 'No matches'} text={schools.length === 0 ? 'Schools will appear here as soon as someone registers through the site.' : 'Try a different search or status filter.'} />}
           renderRow={(s) => (
             <tr key={s.id} className="pa-row" style={{ cursor: 'pointer' }} onClick={() => onView(s)}>
-              <Td style={{ fontWeight: 700 }}>{s.name}</Td>
+              <Td style={{ fontWeight: 700 }}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><SchoolLogo school={s} size={30} /><span>{s.name}</span></div></Td>
               <Td style={{ color: t.subtext }}>{s.code}</Td>
               <Td style={{ color: t.subtext }}>{s.email}</Td>
               <Td><PaymentBadge paid={s.paymentStatus} /></Td>
@@ -584,7 +645,7 @@ function AdminsPage({ schools, loading }) {
           empty={<EmptyState icon={UserCog} title="No active school admins yet" text="Once you approve a school, its verified email becomes its admin login." />}
           renderRow={(s) => (
             <tr key={s.id} className="pa-row">
-              <Td style={{ fontWeight: 600 }}>{s.name}</Td>
+              <Td style={{ fontWeight: 600 }}><div style={{ display: 'flex', alignItems: 'center', gap: 9 }}><SchoolLogo school={s} size={30} /><span>{s.name}</span></div></Td>
               <Td style={{ color: t.subtext }}>{s.email}</Td>
               <Td style={{ color: t.subtext }}>{s.code}</Td>
               <Td><StatusBadge status={s.status} /></Td>
@@ -612,9 +673,17 @@ function AnnouncementComposer({ schools, onCancel, onSave }) {
           <Field label="Title"><Input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Scheduled maintenance this weekend" /></Field>
           <Field label="Message"><textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="Write your announcement…" style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: 10, fontSize: 13, color: t.text, background: t.panel, outline: 'none', resize: 'vertical' }} /></Field>
           <Field label="Send to">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
-              {['All schools', ...schools.map(s => s.name)].map(s => { const active = audience.includes(s); return <button key={s} type="button" onClick={() => toggle(s)} className="pa-btn" style={{ display: 'flex', alignItems: 'center', gap: 5, border: `1px solid ${active ? t.blue : t.border}`, background: active ? t.blueSoft : '#fff', color: active ? t.blue : t.text, borderRadius: 8, padding: '7px 11px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>{active ? <CheckCircle2 size={13} /> : <Circle size={13} color={t.faint} />} {s}</button>; })}
-            </div>
+            <PagedChips
+              items={['All schools', ...schools.map(s => s.name)]}
+              renderItem={(s) => {
+                const active = audience.includes(s);
+                return (
+                  <button key={s} type="button" onClick={() => toggle(s)} className="pa-btn" style={{ display: 'flex', alignItems: 'center', gap: 5, border: `1px solid ${active ? t.blue : t.border}`, background: active ? t.blueSoft : '#fff', color: active ? t.blue : t.text, borderRadius: 8, padding: '7px 11px', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                    {active ? <CheckCircle2 size={13} /> : <Circle size={13} color={t.faint} />} {s}
+                  </button>
+                );
+              }}
+            />
           </Field>
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
@@ -644,7 +713,10 @@ function AnnouncementsPage({ announcements, loading, onNew, onDelete }) {
                 <IconBtn size={26} icon={Trash2} tone="red" onClick={() => onDelete(a)} title="Delete" />
               </div>
               <p style={{ margin: '6px 0 9px', fontSize: 12.5, color: t.subtext, lineHeight: 1.6 }}>{a.body}</p>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>{a.audience.map(s => <Badge key={s} bg={t.blueSoft} color={t.blue}>{s}</Badge>)}<span style={{ fontSize: 11, color: t.faint }}>· {fmtDate(a.postedAt)}</span></div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <PagedChips items={a.audience} gap={6} renderItem={s => <Badge key={s} bg={t.blueSoft} color={t.blue}>{s}</Badge>} />
+                <span style={{ fontSize: 11, color: t.faint }}>· {fmtDate(a.postedAt)}</span>
+              </div>
             </div>
           ))}
         </div>
@@ -782,12 +854,24 @@ export default function SuperAdminDashboard() {
     } catch (err) {
       throw new Error(err?.message?.includes('too long') ? err.message : 'Could not reach the server. Please check your connection.');
     }
-    const data = await res.json().catch(() => ({}));
+    // Read as text first: if the server (or a proxy in front of it, e.g. a
+    // Render cold-start/502 page) sent back HTML or an empty body instead of
+    // JSON, res.json() would just throw and we'd fall back to a useless
+    // "Something went wrong." with no way to tell what actually failed.
+    const raw = await res.text();
+    let data = {};
+    if (raw) {
+      try { data = JSON.parse(raw); } catch {
+        throw new Error(`Server returned an unexpected response (status ${res.status}). ${raw.slice(0, 160).replace(/\s+/g, ' ')}`);
+      }
+    } else if (!res.ok) {
+      throw new Error(`Empty response from server (status ${res.status}). It may be waking up (Render free tier sleeps) — try again in a few seconds.`);
+    }
     if (res.status === 401) {
       endSession(data.message || 'Your session expired. Please sign in again.');
       throw new Error(data.message || 'Your session expired.');
     }
-    if (!res.ok || !data.success) throw new Error(data.message || data.error || 'Something went wrong.');
+    if (!res.ok || !data.success) throw new Error(data.message || data.error || `Request failed (status ${res.status}).`);
     return data;
   }
 

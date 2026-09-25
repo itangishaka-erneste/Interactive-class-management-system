@@ -36,6 +36,16 @@ const GOOGLE_CLIENT_ID =
 
 const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:5000";
 
+// School logos may be returned as paths such as /uploads/logos/<file>.
+// Resolve those paths for the browser while keeping absolute URLs unchanged.
+function resolveLogoUrl(value) {
+  const logo = (value || "").trim();
+  if (!logo) return "";
+  if (/^(data:|blob:|https?:\/\/)/i.test(logo)) return logo;
+  if (logo.startsWith("/")) return `${API_BASE.replace(/\/$/, "")}${logo}`;
+  return logo;
+}
+
 const GOOGLE_CLIENT_ID_MISSING = !GOOGLE_CLIENT_ID || GOOGLE_CLIENT_ID.includes("YOUR_GOOGLE_CLIENT_ID");
 
 const INITIAL_FORM = {
@@ -605,7 +615,7 @@ function LogoField({ form, set }) {
     set("logoFile", dataUrl);
   };
 
-  const previewSrc = form.logoMode === "upload" ? form.logoFile : form.logoUrl;
+  const previewSrc = resolveLogoUrl(form.logoMode === "upload" ? form.logoFile : form.logoUrl);
 
   return (
     <div>
@@ -696,7 +706,7 @@ function TabButton({ active, onClick, icon: Icon, children }) {
 
 function SuccessScreen({ form, onRegisterAnother }) {
   const t = useT();
-  const previewSrc = form.logoMode === "upload" ? form.logoFile : form.logoUrl;
+  const previewSrc = resolveLogoUrl(form.logoMode === "upload" ? form.logoFile : form.logoUrl);
 
   const steps = [
     { icon: ClipboardCheck, text: t.stepReview },

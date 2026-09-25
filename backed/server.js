@@ -8,7 +8,13 @@ const pool = require("./db");
 const registerRoute = require("./register");
 
 // File name is case-sensitive on hosts like Render: Superadmin.js -> "./Superadmin"
-const { router: superadminRouter, setupSocket } = require("./Superadmin");
+// FIX: Superadmin.js exports an OBJECT ({ router, setupSocket, broadcast, ... }),
+// not the router itself. Destructure both pieces you actually need here:
+// `router` to mount as middleware, `setupSocket` to wire up its realtime
+// namespace (this second part was previously missing entirely, so the super
+// admin dashboard's "Live" indicator and instant-registration popups could
+// never connect).
+const { router: superadminRouter, setupSocket: setupSuperadminSocket } = require("./Superadmin");
 const { setupClassroomSocket } = require("./classroom");
 const teacherRouter = require("./teacher");
 const schoolAdminRouter = require("./School_admin");
@@ -55,8 +61,8 @@ app.use((req, res, next) => {
 const io = new Server(server, {
   cors: { origin: corsOrigin, methods: ["GET", "POST"] },
 });
-setupSocket(io);
 setupClassroomSocket(io);
+setupSuperadminSocket(io); // FIX: this was missing, so the /superadmin namespace never existed.
 
 app.use("/api/schools", registerRoute);
 app.use("/api/superadmin", superadminRouter);

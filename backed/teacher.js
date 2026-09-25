@@ -1,9 +1,9 @@
 /* ============================================================================
    teacher.js   mounted at  /api/teacher
 
-   .env needed for the AI features:
-     ANTHROPIC_API_KEY=sk-ant-...
-     ANTHROPIC_MODEL=claude-sonnet-5        (optional, this is the default)
+   .env needed for the AI features (Gemini, free tier):
+     GEMINI_API_KEY=AIza...
+     GEMINI_MODEL=gemini-2.5-flash-lite     (optional, this is the default)
 
    What changed compared with the previous version
    -----------------------------------------------
@@ -16,6 +16,8 @@
    3. Quiz results now include per-question statistics.
    4. /students returns quizzes done + average score for each student.
    5. The AI rate-limit map is pruned so it cannot grow forever.
+   6. AI calls now go through Google's Gemini API (free tier) instead of the
+      Anthropic API, so the AI features work without a paid key.
    ============================================================================ */
 
 const express = require("express");
@@ -640,21 +642,25 @@ function checkAiLimit(teacherId, max = 20, windowMs = 60 * 60 * 1000) {
   aiCalls.set(teacherId, recent);
 }
 
+// Gemini (Google AI Studio) free-tier call. Key goes in the URL, not a header.
+// Response shape: data.candidates[0].content.parts[].text
 async function askClaude({ system, prompt, maxTokens }) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key) throw httpError(503, "AI is not set up yet. Add ANTHROPIC_API_KEY to the server .env file and restart the server.");
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) throw httpError(503, "AI is not set up yet. Add GEMINI_API_KEY to the server .env file and restart the server.");
   if (typeof fetch !== "function") throw httpError(500, "This server's Node.js is too old for fetch(). Use Node 18 or newer.");
+
+  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
   let res;
   try {
-    res = await fetch("https://api.anthropic.com/v1/messages", {
+    res = await fetch(url, {
       method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || "claude-sonnet-5",
-        max_tokens: maxTokens,
-        system,
-        messages: [{ role: "user", content: prompt }],
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: maxTokens },
       }),
       signal: AbortSignal.timeout(90000),
     });
@@ -666,11 +672,13 @@ async function askClaude({ system, prompt, maxTokens }) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     console.error("[teacher] AI error:", res.status, JSON.stringify(data).slice(0, 400));
-    if (res.status === 401) throw httpError(502, "The AI key on the server was rejected. Check ANTHROPIC_API_KEY.");
-    if (res.status === 429) throw httpError(429, "The AI is busy right now. Please try again in a moment.");
+    if (res.status === 400 || res.status === 403) throw httpError(502, "The AI key on the server was rejected. Check GEMINI_API_KEY.");
+    if (res.status === 429) throw httpError(429, "The AI is busy right now (free tier limit reached). Please try again in a moment.");
     throw httpError(502, "The AI could not answer. Please try again.");
   }
-  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+
+  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  return parts.map((p) => p.text || "").join("");
 }
 
 function extractJson(text) {

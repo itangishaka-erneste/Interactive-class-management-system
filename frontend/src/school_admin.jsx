@@ -252,9 +252,9 @@ function StatMini({ icon: Icon, value, label, tone = 'green' }) {
 }
 function SearchBox({ value, onChange, placeholder }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: t.panel, border: `1px solid ${t.border}`, borderRadius: 8, padding: '8px 11px', flex: '1 1 200px', maxWidth: 320 }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: t.panel, border: `1px solid ${t.border}`, borderRadius: 8, padding: '5px 10px', minHeight: 34, boxSizing: 'border-box', flex: '1 1 200px', maxWidth: 320 }}>
       <Search size={14} color={t.subtext} />
-      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12.5, color: t.text, width: '100%' }} />
+      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12.5, lineHeight: '18px', color: t.text, width: '100%', padding: 0, minWidth: 0 }} />
     </div>
   );
 }
