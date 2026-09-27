@@ -11,9 +11,21 @@
      POST /quizzes/:id/start
      POST /quizzes/:id/answer     { questionId, optionId }
      POST /quizzes/:id/submit
-     POST /quizzes/:id/penalty    { seconds }   <- NEW: reports time spent away
-     POST /quizzes/:id/returned                  <- NEW: tells the teacher the
+     POST /quizzes/:id/penalty    { seconds }   <- reports time spent away
+     POST /quizzes/:id/returned                  <- tells the teacher the
                                                      student came back
+     GET  /quizzes/:id/review                    <- read-only, post-submit
+
+   FIX (student photos): /me now also returns profile_image / profileImage
+   so student.jsx's sidebar/header avatar, and every teacher-side screen that
+   displays a student (Students, Quiz results, All marks, quiz review), can
+   all show the same real photo instead of falling back to an initial.
+
+   FIX (live answer preview): POST /quizzes/:id/answer now looks up the
+   question text and the chosen option's text and includes them in the
+   quiz:studentProgress realtime event (lastQuestion / lastAnswer), so the
+   teacher's live activity feed can show what a student is actually typing/
+   picking in real time, not just a bare "3/10 answered" counter.
    ============================================================================ */
 
 const express = require("express");
@@ -39,6 +51,11 @@ router.use(cls.requireMember("student"));
 // alarming "duplicate key value violates unique constraint
 // pg_type_typname_nsp_index" error. router.use(cls.requireReady) above
 // already guarantees the table exists before any route below can run.
+
+// FIX (student photos): older deployments may not have this column yet.
+// Safe/idempotent to run on every boot; teacher.js runs the same statement
+// so whichever router loads first wins and the other is a no-op.
+pool.query("ALTER TABLE ecw_members ADD COLUMN IF NOT EXISTS profile_image TEXT").catch(() => {});
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -69,6 +86,12 @@ router.get(
         schoolName: m.school_name,
         classId: m.class_id || null,
         className: m.class_name || null,
+        // FIX (student photos): expose the stored profile photo so
+        // student.jsx no longer has to rely solely on the Google-session
+        // picture, and so every teacher-facing screen showing this student
+        // (Students, Quiz results, All marks, quiz review) has a real photo.
+        profile_image: m.profile_image || "",
+        profileImage: m.profile_image || "",
       },
     });
   })
@@ -230,11 +253,9 @@ async function getQuestionsWithOptions(quizId, revealAnswers) {
     if (!byQuestion.has(o.question_id)) byQuestion.set(o.question_id, []);
     byQuestion.get(o.question_id).push({ id: o.id, optionText: o.option_text, isCorrect: revealAnswers ? o.is_correct : undefined });
   }
-  // FIX: `SELECT *` already pulls `marks` out of the row (see the migration
-  // in classroom.js), but it was being dropped right here instead of passed
-  // on to the student -- so there was no way to show "worth N marks" while
-  // taking or reviewing a quiz, and no way to weight scoring by it either
-  // (see the /submit route below).
+  // `SELECT *` already pulls `marks` out of the row (see the migration in
+  // classroom.js); it is passed on here so "worth N marks" can be shown
+  // while taking or reviewing a quiz, and used to weight scoring below.
   return qs.rows.map((q) => ({ id: q.id, question: q.question, marks: q.marks, options: byQuestion.get(q.id) || [] }));
 }
 
@@ -258,9 +279,9 @@ router.post(
     } else {
       let reopenDeadline = null;
       if (quiz.ends_at && now > new Date(quiz.ends_at).getTime()) {
-        // FIX (new feature): the class-wide window is closed. Only let this
-        // student in if their teacher specifically granted them a reopen
-        // (see POST /api/teacher/quizzes/:id/students/:studentId/reopen in
+        // The class-wide window is closed. Only let this student in if
+        // their teacher specifically granted them a reopen (see POST
+        // /api/teacher/quizzes/:id/students/:studentId/reopen in
         // teacher.js), and only while that grant is still valid.
         const reopen = await pool.query(
           "SELECT deadline_at FROM ecw_quiz_reopens WHERE quiz_id = $1 AND student_id = $2 AND deadline_at > NOW()",
@@ -289,7 +310,7 @@ router.post(
     if (isFreshAttempt) {
       try {
         emit(rooms.member(quiz.teacher_id), "quiz:studentStarted", {
-          quizId, quizTitle: quiz.title, studentId: m.id, studentName: m.full_name,
+          quizId, quizTitle: quiz.title, studentId: m.id, studentName: m.full_name, total: questions.length,
         });
       } catch { /* realtime is best-effort */ }
     }
@@ -317,9 +338,12 @@ router.post(
     if (attempt.submitted_at) throw httpError(409, "This quiz has already been submitted.");
     if (attempt.deadline_at && Date.now() > new Date(attempt.deadline_at).getTime()) throw httpError(400, "Time is up for this quiz.");
 
-    const q = await pool.query("SELECT id FROM ecw_quiz_questions WHERE id = $1 AND quiz_id = $2", [questionId, quizId]);
+    // FIX (live answer preview): pull the actual question/option text (not
+    // just their ids) so the realtime event below can tell the teacher what
+    // the student just picked, not only that "something" was picked.
+    const q = await pool.query("SELECT id, question FROM ecw_quiz_questions WHERE id = $1 AND quiz_id = $2", [questionId, quizId]);
     if (q.rowCount === 0) throw httpError(400, "That question does not belong to this quiz.");
-    const o = await pool.query("SELECT id FROM ecw_quiz_options WHERE id = $1 AND question_id = $2", [optionId, questionId]);
+    const o = await pool.query("SELECT id, option_text FROM ecw_quiz_options WHERE id = $1 AND question_id = $2", [optionId, questionId]);
     if (o.rowCount === 0) throw httpError(400, "That option does not belong to this question.");
 
     await pool.query(
@@ -327,15 +351,38 @@ router.post(
        ON CONFLICT (attempt_id, question_id) DO UPDATE SET option_id = EXCLUDED.option_id`,
       [attempt.id, questionId, optionId]
     );
+
+    // This lets one live row per student update in place ("3/10 answered",
+    // plus what they just chose) instead of the teacher only finding out
+    // anything happened when the student is already done.
+    try {
+      const quizR = await pool.query("SELECT teacher_id, title FROM ecw_quizzes WHERE id = $1", [quizId]);
+      if (quizR.rowCount > 0) {
+        const countR = await pool.query("SELECT COUNT(*)::int AS n FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
+        const totalR = await pool.query("SELECT COUNT(*)::int AS n FROM ecw_quiz_questions WHERE quiz_id = $1", [quizId]);
+        emit(rooms.member(quizR.rows[0].teacher_id), "quiz:studentProgress", {
+          quizId,
+          quizTitle: quizR.rows[0].title,
+          studentId: m.id,
+          studentName: m.full_name,
+          answered: countR.rows[0].n,
+          total: totalR.rows[0].n,
+          // FIX (live answer preview): the question the student just
+          // answered and the option text they chose, so the teacher's live
+          // activity feed can show it like a "typing..." preview.
+          lastQuestion: q.rows[0].question,
+          lastAnswer: o.rows[0].option_text,
+        });
+      }
+    } catch { /* realtime is best-effort */ }
+
     res.json({ success: true });
   })
 );
 
-// FIX (new feature): the client reports how many seconds the student spent
-// away from the quiz tab (it pings this once per second while the tab is
-// hidden). Each report adds that many penalty marks to their attempt and
-// tells the teacher live, so the "leaving costs a mark a second, and the
-// teacher can see it happening" behaviour actually exists.
+// The client reports how many seconds the student spent away from the quiz
+// tab (it pings this once per second while the tab is hidden). Each report
+// adds that many penalty marks to their attempt and tells the teacher live.
 router.post(
   "/quizzes/:id/penalty",
   wrap(async (req, res) => {
@@ -368,7 +415,7 @@ router.post(
   })
 );
 
-// FIX (new feature): tells the teacher the student came back to the quiz tab.
+// Tells the teacher the student came back to the quiz tab.
 router.post(
   "/quizzes/:id/returned",
   wrap(async (req, res) => {
@@ -386,14 +433,10 @@ router.post(
   })
 );
 
-// FIX (new): the "Review" button on a completed quiz used to call
-// POST /quizzes/:id/start again, which this router correctly rejects for an
-// already-submitted attempt ("You have already submitted this quiz.") — so
-// review never actually worked; it just showed that error and closed. This
-// is the missing read-only endpoint: once an attempt is submitted, the
-// student can always see each question, what they picked, and the correct
-// answer (getQuestionsWithOptions's revealAnswers flag, already used
-// elsewhere, is exactly what makes this safe to expose only now).
+// Read-only: once an attempt is submitted, the student can always see each
+// question, what they picked, and the correct answer (getQuestionsWithOptions's
+// revealAnswers flag, already used elsewhere, is exactly what makes this safe
+// to expose only now).
 router.get(
   "/quizzes/:id/review",
   wrap(async (req, res) => {
@@ -451,14 +494,10 @@ router.post(
     const attempt = attemptR.rows[0];
     if (attempt.submitted_at) throw httpError(409, "This quiz has already been submitted.");
 
-    // FIX: this used to COUNT(*) questions/correct-answers, which is the
-    // same as treating every question as worth exactly 1 mark -- the
-    // `marks` column a teacher can set per question (see writeQuestions in
-    // teacher.js) was never actually consulted, so weighting a hard
-    // question higher had no effect on the score. SUM(marks) instead of
-    // COUNT(*) gives the same numbers as before for any quiz that never
-    // touched marks (they all default to 1), and weighted numbers for one
-    // that does.
+    // SUM(marks) instead of COUNT(*) so a per-question weight actually
+    // affects the score (COUNT(*) is equivalent to every question being
+    // worth exactly 1 mark, which silently ignored the `marks` column a
+    // teacher can set per question -- see writeQuestions in teacher.js).
     const totalR = await pool.query("SELECT COALESCE(SUM(marks), 0)::int AS n FROM ecw_quiz_questions WHERE quiz_id = $1", [quizId]);
     const total = totalR.rows[0].n;
 

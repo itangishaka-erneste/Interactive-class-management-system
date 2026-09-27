@@ -18,12 +18,22 @@
    5. The AI rate-limit map is pruned so it cannot grow forever.
    6. AI calls now go through Google's Gemini API (free tier) instead of the
       Anthropic API, so the AI features work without a paid key.
-   7. NEW: /quizzes/:id/results now lists every student in the class, including
+   7. /quizzes/:id/results now lists every student in the class, including
       those who never started (previously only students with an attempt row
       appeared at all, so a teacher could never even see who to help).
-   8. NEW: POST /quizzes/:id/students/:studentId/reopen lets a teacher give one
+   8. POST /quizzes/:id/students/:studentId/reopen lets a teacher give one
       specific student another chance at a quiz whose window has closed, or
       extend a student's own deadline if they're mid-attempt.
+   9. NEW: /students and /quizzes/:id/results now include each student's
+      profile photo, so the teacher dashboard can show a real avatar instead
+      of just initials.
+   10. NEW: GET /marks -- one flat, filterable table of every submitted mark
+       across every quiz/class/subject this teacher owns (student photo,
+       name, subject, quiz, class, date, score), for the "All marks" screen.
+   11. NEW: GET /quizzes/:id/students/:studentId/review -- lets a teacher open
+       the same question-by-question breakdown (their answer vs. the correct
+       one) that a student sees for their own attempt, from anywhere a
+       "Review" button appears (Quiz results, All marks).
    ============================================================================ */
 
 const express = require("express");
@@ -47,6 +57,11 @@ router.use(cls.requireMember("teacher"));
 // to race with student.js's identical copy of this block at every startup.
 // router.use(cls.requireReady) above already guarantees the table exists
 // before any route below can run.
+
+// FIX (student photos): older deployments may not have this column yet.
+// Safe/idempotent to run on every boot; student.js runs the same statement
+// so whichever router loads first wins and the other is a no-op.
+pool.query("ALTER TABLE ecw_members ADD COLUMN IF NOT EXISTS profile_image TEXT").catch(() => {});
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -332,11 +347,9 @@ async function loadQuizzes(where, params) {
   const questionsByQuiz = new Map();
   for (const row of qs.rows) {
     if (!questionsByQuiz.has(row.quiz_id)) questionsByQuiz.set(row.quiz_id, []);
-    // FIX: `SELECT *` already pulled `marks` out of the row, but it was
-    // being dropped right here instead of passed on to the teacher
-    // dashboard -- so a weight set in the editor was saved correctly (see
-    // writeQuestions) yet never showed up again on reload, and the quiz
-    // preview/results screens had no way to reflect it either.
+    // `SELECT *` already pulled `marks` out of the row; it is passed on here
+    // so a weight set in the editor (see writeQuestions) shows up again on
+    // reload, and the quiz preview/results screens can reflect it too.
     questionsByQuiz.get(row.quiz_id).push({ id: row.id, question: row.question, marks: row.marks, options: optionsByQuestion.get(row.id) || [] });
   }
 
@@ -365,11 +378,9 @@ async function getQuiz(id, teacherId) {
 }
 
 // Drops empty options and keeps at most one correct answer per question.
-// FIX: `marks` (how much this question is worth -- see the migration in
-// classroom.js) was added to the schema but never actually read from the
-// request body, so every question kept being written back with the column's
-// default of 1 no matter what the teacher set in the editor. Parse and clamp
-// it here like every other numeric field on this quiz.
+// `marks` (how much this question is worth -- see the migration in
+// classroom.js) is parsed and clamped here like every other numeric field on
+// this quiz, so a teacher's per-question weight is actually persisted.
 function normalizeQuestions(input) {
   if (input === undefined || input === null) return [];
   if (!Array.isArray(input)) throw httpError(400, "Questions must be a list.");
@@ -557,10 +568,10 @@ router.delete(
   })
 );
 
-// FIX (new feature): lets a teacher give ONE student another chance at this
-// quiz -- either because they never started it and the window has closed
-// ("missed it"), or to extend their personal deadline if they're mid-attempt
-// and ran out of time. This never touches the schedule other students see.
+// Lets a teacher give ONE student another chance at this quiz -- either
+// because they never started it and the window has closed ("missed it"), or
+// to extend their personal deadline if they're mid-attempt and ran out of
+// time. This never touches the schedule other students see.
 router.post(
   "/quizzes/:id/students/:studentId/reopen",
   wrap(async (req, res) => {
@@ -603,10 +614,10 @@ router.post(
   })
 );
 
-// FIX: this used to only ever list students who had an ecw_quiz_attempts row,
-// so a teacher could never see -- let alone help -- a student who never
-// started the quiz at all. It now lists every student in the class with a
-// LEFT JOIN, so "never started" shows up as its own visible row.
+// Lists every student in the class with a LEFT JOIN, so "never started"
+// shows up as its own visible row instead of the student being invisible.
+// FIX (student photos): now also selects s.profile_image so the results
+// table can show the same real avatar as the Students and All-marks pages.
 router.get(
   "/quizzes/:id/results",
   wrap(async (req, res) => {
@@ -616,7 +627,7 @@ router.get(
 
     const [attempts, size, stats] = await Promise.all([
       pool.query(
-        `SELECT s.id AS student_id, s.full_name, s.email,
+        `SELECT s.id AS student_id, s.full_name, s.email, s.profile_image,
                 a.id AS attempt_id, a.started_at, a.submitted_at, a.deadline_at,
                 a.raw_score, a.penalty_marks, a.final_score, a.total, a.score_percent
          FROM ecw_members s
@@ -657,6 +668,7 @@ router.get(
           attemptId: a.attempt_id,
           studentName: a.full_name,
           email: a.email,
+          studentImage: a.profile_image || "",
           startedAt: a.started_at,
           submittedAt: a.submitted_at,
           deadlineAt: a.deadline_at,
@@ -680,13 +692,117 @@ router.get(
   })
 );
 
+// One flattened table of every submitted mark, so a teacher doesn't have to
+// open each quiz separately to see who scored what. Filtering/sorting/
+// searching is done client-side in teacher.jsx, same pattern as
+// notes/quizzes/results elsewhere in this file. Includes each student's
+// photo so the "All marks" screen can show a real avatar per row.
+router.get(
+  "/marks",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const r = await pool.query(
+      `SELECT a.id AS attempt_id, a.raw_score, a.penalty_marks, a.final_score, a.total, a.score_percent, a.submitted_at,
+              z.id AS quiz_id, z.title AS quiz_title, z.subject, z.class_id, c.name AS class_name,
+              s.id AS student_id, s.full_name AS student_name, s.email AS student_email, s.profile_image AS student_image
+       FROM ecw_quiz_attempts a
+       JOIN ecw_quizzes z ON z.id = a.quiz_id
+       JOIN ecw_classes c ON c.id = z.class_id
+       JOIN ecw_members s ON s.id = a.student_id
+       WHERE z.teacher_id = $1 AND a.submitted_at IS NOT NULL
+       ORDER BY a.submitted_at DESC`,
+      [m.id]
+    );
+    res.json({
+      success: true,
+      marks: r.rows.map((row) => ({
+        attemptId: row.attempt_id,
+        quizId: row.quiz_id,
+        quizTitle: row.quiz_title,
+        subject: row.subject,
+        classId: row.class_id,
+        className: row.class_name,
+        studentId: row.student_id,
+        studentName: row.student_name,
+        studentEmail: row.student_email,
+        studentImage: row.student_image || "",
+        rawScore: row.raw_score,
+        penaltyMarks: row.penalty_marks,
+        finalScore: row.final_score,
+        total: row.total,
+        scorePercent: row.score_percent,
+        submittedAt: row.submitted_at,
+      })),
+    });
+  })
+);
+
+// The teacher-facing equivalent of the student's own GET /quizzes/:id/review
+// -- every question, what a specific student picked, and what was actually
+// correct. Reachable from anywhere a "Review" button appears (Quiz results,
+// All marks). getQuiz()'s ownership check keeps a teacher from reviewing a
+// quiz that isn't theirs.
+router.get(
+  "/quizzes/:id/students/:studentId/review",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "quiz");
+    const studentId = parseId(req.params.studentId, "student");
+    const quiz = await getQuiz(id, m.id); // throws 404 if not this teacher's quiz
+
+    const attemptR = await pool.query("SELECT * FROM ecw_quiz_attempts WHERE quiz_id = $1 AND student_id = $2", [id, studentId]);
+    if (attemptR.rowCount === 0) throw httpError(404, "This student has not started this quiz.");
+    const attempt = attemptR.rows[0];
+    if (!attempt.submitted_at) throw httpError(400, "This student has not submitted the quiz yet.");
+
+    const studentR = await pool.query("SELECT full_name, email, profile_image FROM ecw_members WHERE id = $1", [studentId]);
+    if (studentR.rowCount === 0) throw httpError(404, "Student not found.");
+
+    const qs = await pool.query("SELECT * FROM ecw_quiz_questions WHERE quiz_id = $1 ORDER BY position, id", [id]);
+    const qIds = qs.rows.map((row) => row.id);
+    const os = qIds.length
+      ? await pool.query("SELECT * FROM ecw_quiz_options WHERE question_id = ANY($1::int[]) ORDER BY position, id", [qIds])
+      : { rows: [] };
+    const answers = await pool.query("SELECT question_id, option_id FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
+    const answerByQuestion = new Map(answers.rows.map((a) => [a.question_id, a.option_id]));
+    const optionsByQuestion = new Map();
+    for (const o of os.rows) {
+      if (!optionsByQuestion.has(o.question_id)) optionsByQuestion.set(o.question_id, []);
+      optionsByQuestion.get(o.question_id).push({ id: o.id, optionText: o.option_text, isCorrect: o.is_correct });
+    }
+
+    res.json({
+      success: true,
+      quiz: { id: quiz.id, title: quiz.title, className: quiz.className, subject: quiz.subject },
+      student: { id: studentId, fullName: studentR.rows[0].full_name, email: studentR.rows[0].email, profileImage: studentR.rows[0].profile_image || "" },
+      result: {
+        submittedAt: attempt.submitted_at,
+        rawScore: attempt.raw_score,
+        penaltyMarks: attempt.penalty_marks,
+        finalScore: attempt.final_score,
+        total: attempt.total,
+        scorePercent: attempt.score_percent,
+      },
+      questions: qs.rows.map((q) => ({
+        id: q.id,
+        question: q.question,
+        marks: q.marks,
+        selectedOptionId: answerByQuestion.get(q.id) || null,
+        options: optionsByQuestion.get(q.id) || [],
+      })),
+    });
+  })
+);
+
 /* --------------------------------- students --------------------------------- */
 
+// FIX (student photos): now also selects m.profile_image so the Students
+// page can show a real avatar per row.
 router.get(
   "/students",
   wrap(async (req, res) => {
     const r = await pool.query(
-      `SELECT m.id, m.full_name, m.email, m.class_id, c.name AS class_name, m.created_at,
+      `SELECT m.id, m.full_name, m.email, m.class_id, c.name AS class_name, m.created_at, m.profile_image,
          (SELECT COUNT(*) FROM ecw_quiz_attempts a JOIN ecw_quizzes z ON z.id = a.quiz_id
            WHERE a.student_id = m.id AND a.submitted_at IS NOT NULL AND z.teacher_id = $1)::int AS quizzes_done,
          (SELECT ROUND(AVG(a.score_percent)) FROM ecw_quiz_attempts a JOIN ecw_quizzes z ON z.id = a.quiz_id
@@ -707,6 +823,7 @@ router.get(
         joinedAt: s.created_at,
         quizzesDone: s.quizzes_done,
         averageScore: s.average_score,
+        profileImage: s.profile_image || "",
       })),
     });
   })

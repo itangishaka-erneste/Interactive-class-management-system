@@ -290,7 +290,13 @@ function InAppChatWidget() {
     if (!input.trim()) return;
 
     const userMsg = {
-      id: Date.now(),
+      // FIX (duplicate React key): Date.now() alone can return the exact same
+      // millisecond for two messages sent in quick succession, which made two
+      // list items share the same `key` and triggered React's "Encountered
+      // two children with the same key" duplicate-key error/warning. Adding a
+      // random suffix guarantees each message id is unique even when several
+      // are created within the same millisecond.
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       text: input,
       sender: "user",
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -1438,7 +1444,7 @@ export default function Student({ onSignOut }) {
           )}
 
           {active === "notes" && (
-            <div className="bg-white rounded-lg border border-gray-100 p-5">
+            <div className="bg-white rounded-md border border-gray-100 p-4">
               <h2 className="font-extrabold text-base mb-1" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>Class Notes & Study Materials</h2>
               <p className="text-xs text-gray-400 mb-5">Review notes published by your course teachers.</p>
               {notes.length === 0 ? (
@@ -1447,7 +1453,7 @@ export default function Student({ onSignOut }) {
                 <>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {notes.slice(0, notesVisible).map((note) => (
-                      <div key={note.id} onClick={() => setOpenNote(note)} className="bg-gray-50 border border-gray-100 hover:border-gray-300 transition-colors p-4 rounded-xl cursor-pointer">
+                      <div key={note.id} onClick={() => setOpenNote(note)} className="bg-gray-50 border border-gray-100 hover:border-gray-300 transition-colors p-3 rounded-md cursor-pointer">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: GREEN_SOFT, color: GREEN }}>{note.subject || "General"}</span>
                           <span className="text-[10px] text-gray-400">{fmtDateTime(note.updatedAt)}</span>
@@ -1464,7 +1470,7 @@ export default function Student({ onSignOut }) {
           )}
 
           {active === "quizzes" && (
-            <div className="bg-white rounded-lg border border-gray-100 p-5">
+            <div className="bg-white rounded-md border border-gray-100 p-4">
               <h2 className="font-extrabold text-base mb-1" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>Available & Active Quizzes</h2>
               <p className="text-xs text-gray-400 mb-5">Take assigned quizzes before deadlines expire.</p>
               {quizzes.length === 0 ? (

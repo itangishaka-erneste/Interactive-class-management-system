@@ -7,7 +7,7 @@ import {
   ChevronDown, Clock, CheckCircle2, Circle, Menu, ArrowLeft,
   Save, FileText, AlertCircle, ListChecks, PenLine,
   CalendarClock, PlusCircle, Sparkles, Lock, RefreshCw, Check, BarChart3,
-  Radio
+  Radio, Award, Search, ArrowUpDown
 } from 'lucide-react';
 
 /* ============================================================================
@@ -26,6 +26,13 @@ import {
      dashboard uses, so a student joining a class, submitting a quiz, or this
      teacher's own edits from another tab all show up live without a manual
      refresh (see the socket effect inside the Teacher component below).
+   - Organization pass: every list on this dashboard (notes, quizzes, quiz
+     results, students, and the new "All marks" table) now follows the same
+     pattern -- searchable/filterable where useful, sortable where a table
+     makes sense, paginated with "Show more", and every screen that shows a
+     student shows their real profile photo (falling back to an initial)
+     instead of just a name. See StudentAvatar, MarksPage, and
+     TeacherQuizReviewModal below.
    ============================================================================ */
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -47,8 +54,9 @@ const inputStyle = {
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
 // Shared "show N, then a Show more button" page size used by every list on
-// this dashboard (notes, quizzes, quiz results) -- see the FIX notes near
-// NotesDashboard / QuizzesDashboard / ResultsPage below.
+// this dashboard (notes, quizzes, quiz results, all marks) -- see the FIX
+// notes near NotesDashboard / QuizzesDashboard / ResultsPage / MarksPage
+// below.
 const SHOW_MORE_STEP = 3;
 
 /* ------------------------------------ API ----------------------------------- */
@@ -84,7 +92,7 @@ const USER_SESSION_KEY = 'ecw_teacher_session';
 // depend on an in-memory note/quiz object that a fresh page load doesn't
 // have, so those fall back to their list view instead of a blank editor.
 const SECTION_STORAGE_KEY = 'ecw_teacher_section';
-const NAV_SECTIONS = ['notes', 'quizzes', 'students', 'settings'];
+const NAV_SECTIONS = ['notes', 'quizzes', 'students', 'results', 'marks', 'settings'];
 function getStoredSection() {
   try {
     const s = localStorage.getItem(SECTION_STORAGE_KEY);
@@ -195,7 +203,7 @@ function saveRenewedToken(response) {
 // Do not leave the whole dashboard on an apparently frozen loading screen
 // while the hosted API is asleep or unreachable. The error view provides a
 // retry action when the request times out.
-async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
+async function api(path, { method = 'GET', body, timeoutMs = 25000, _retried = false } = {}) {
   const session = getSession();
   const headers = { 'Content-Type': 'application/json' };
   if (session && session.token) headers.Authorization = `Bearer ${session.token}`;
@@ -211,6 +219,18 @@ async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
       signal: controller.signal,
     });
   } catch (err) {
+    clearTimeout(timer);
+    // FIX ("Cannot reach the server"): a hosted free-tier backend that has
+    // gone to sleep drops the very first request while it wakes up, which
+    // used to surface immediately as this error even though a second try a
+    // moment later would have worked fine. One silent retry (GET requests
+    // only -- a write is never safely repeatable without knowing whether the
+    // first attempt actually landed) covers exactly that case; a second real
+    // failure still reports normally.
+    if (!_retried && method === 'GET') {
+      await new Promise((r) => setTimeout(r, 1200));
+      return api(path, { method, body, timeoutMs, _retried: true });
+    }
     throw new ApiError(
       err.name === 'AbortError'
         ? 'The server took too long to answer. Please try again.'
@@ -226,6 +246,15 @@ async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
   try {
     result = await response.json();
   } catch {
+    // FIX ("The server response was unreadable"): the same wake-from-sleep
+    // window can let the request through but have the response be a plain
+    // text/HTML gateway page instead of JSON. Retrying once (GET only, for
+    // the same reason as above) resolves this the moment the backend is
+    // actually up, instead of failing on the very first click after idle.
+    if (!_retried && method === 'GET') {
+      await new Promise((r) => setTimeout(r, 1200));
+      return api(path, { method, body, timeoutMs, _retried: true });
+    }
     throw new ApiError('The server response was unreadable.', response.status);
   }
   if (response.status === 401) {
@@ -315,8 +344,10 @@ function GlobalStyle() {
       fieldset:disabled input, fieldset:disabled textarea, fieldset:disabled select { opacity: .65; cursor: not-allowed; }
       @keyframes tdPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
       .td-live-dot { animation: tdPulse 1.6s ease-in-out infinite; }
+      @keyframes tdBounceDot { 0%, 80%, 100% { transform: scale(0.6); opacity: .35; } 40% { transform: scale(1); opacity: 1; } }
+      .td-bounce-dot { display: inline-block; animation: tdBounceDot 1.1s infinite ease-in-out; }
       @media (prefers-reduced-motion: reduce) {
-        .td-skel, .td-fade, .td-toast, .td-spin, .td-live-dot { animation: none !important; }
+        .td-skel, .td-fade, .td-toast, .td-spin, .td-live-dot, .td-bounce-dot { animation: none !important; }
       }
       @media (max-width: 860px) {
         .td-hamburger { display: flex !important; }
@@ -350,6 +381,28 @@ function Chip({ children, tone = 'neutral' }) {
   const c = map[tone];
   return <span style={{ background: c.bg, color: c.color, fontSize: 10.5, fontWeight: 700, padding: '3px 8px', borderRadius: 6, whiteSpace: 'nowrap' }}>{children}</span>;
 }
+
+// FIX (organization pass -- student photos): a single reusable avatar used
+// everywhere a student is shown (Students, Quiz results, All marks, the quiz
+// review modal, live activity). Shows the real profile photo when one is
+// set; falls back to a colored initial (never a broken-image icon) if the
+// photo is missing or fails to load.
+function StudentAvatar({ name, src, size = 30 }) {
+  const [broken, setBroken] = useState(false);
+  const initial = (name || '?').trim().charAt(0).toUpperCase() || '?';
+  if (src && !broken) {
+    return (
+      <img src={src} alt={name || 'Student'} referrerPolicy="no-referrer" onError={() => setBroken(true)}
+        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', flexShrink: 0, border: `1px solid ${t.border}` }} />
+    );
+  }
+  return (
+    <div style={{ width: size, height: size, borderRadius: '50%', flexShrink: 0, background: t.blueSoft, color: t.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, fontSize: size * 0.42 }}>
+      {initial}
+    </div>
+  );
+}
+
 function IconBtn({ icon: Icon, onClick, tone = 'default', title, size = 32, busy, disabled }) {
   const tones = {
     default: { bg: t.panel, color: t.subtext },
@@ -723,6 +776,7 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
         <NavSection label="Insights">
           <NavItem icon={Users} label="Students" active={active === 'students'} onClick={() => go('students')} />
           <NavItem icon={BarChart3} label="Quiz results" active={active === 'results'} onClick={() => go('results')} />
+          <NavItem icon={Award} label="All marks" active={active === 'marks'} onClick={() => go('marks')} />
         </NavSection>
         <NavSection label="Account">
           <NavItem icon={Settings} label="Settings" active={active === 'settings'} onClick={() => go('settings')} />
@@ -753,10 +807,10 @@ function Header({ selectedClass, setSelectedClass, filterOptions, selectedSubjec
           {live ? 'Live' : 'Offline'}
         </span>
         <Dropdown value={selectedClass} options={filterOptions} onChange={setSelectedClass} icon={Filter} />
-        {/* FIX (requested filter): a class filter alone wasn't enough -- a
-            teacher who teaches several subjects in the same class had no way
-            to narrow notes/quizzes/results down to just one subject. This is
-            the second dropdown; its options are derived from the currently
+        {/* A class filter alone wasn't enough -- a teacher who teaches
+            several subjects in the same class had no way to narrow
+            notes/quizzes/results down to just one subject. This is the
+            second dropdown; its options are derived from the currently
             selected class in the parent (see subjectOptions in Teacher()). */}
         <Dropdown value={selectedSubject} options={subjectOptions} onChange={setSelectedSubject} icon={BookOpen} />
         <PrimaryButton variant="outline" icon={Plus} onClick={onNewNote}>New note</PrimaryButton>
@@ -781,10 +835,39 @@ function Tabs({ tabs, active, onChange }) {
 
 /* ------------------------------- LIVE ACTIVITY -------------------------------- */
 
-// Realtime feed of what students are doing right now: joining a class,
-// submitting a quiz. Fed by the Socket.IO listeners set up in the Teacher
-// component (student:joined, quiz:submission) - see the socket effect below.
-function LiveActivityPanel({ activity, live }) {
+// Small "typing"-style indicator: three dots pulsing in sequence, used to
+// show a student is actively doing something right now (taking a quiz, or
+// away from the tab) without needing a fresh row of text for every tick.
+function TypingDots({ color }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }} aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <span key={i} className="td-bounce-dot" style={{ width: 5, height: 5, borderRadius: '50%', background: color, animationDelay: `${i * 0.15}s` }} />
+      ))}
+    </span>
+  );
+}
+
+// Realtime feed of what students are doing right now, fed by the Socket.IO
+// listeners set up in the Teacher component below (quiz:studentStarted,
+// quiz:studentProgress, quiz:studentAway, quiz:studentReturned,
+// quiz:submission).
+//
+// This keeps exactly ONE row per active student+quiz session, which updates
+// in place (with a small bouncing-dots "live" indicator) as that student
+// answers questions, leaves the tab, comes back, or submits. Every
+// individual event is still recorded -- just inside that row's history,
+// which "View" opens instead of the teacher having to scroll past it.
+//
+// FIX (live answer preview): each row now also shows the option text the
+// student most recently chose (fed by lastAnswer on quiz:studentProgress --
+// see student.js), like a lightweight "typing…" preview of their work in
+// progress, instead of only ever showing a bare "3/10 answered" count.
+function LiveActivityPanel({ sessions, live, onViewSession }) {
+  const list = Object.values(sessions)
+    .sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt))
+    .slice(0, 20);
+
   return (
     <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
       <div style={{ padding: '11px 16px', background: t.panel, display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -792,22 +875,81 @@ function LiveActivityPanel({ activity, live }) {
         <span className="td-heading" style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Live student activity</span>
         <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 700, color: live ? t.green : t.faint }}>{live ? 'Connected' : 'Reconnecting…'}</span>
       </div>
-      {activity.length === 0 ? (
-        <p style={{ margin: 0, padding: 18, fontSize: 12.5, color: t.subtext }}>Nothing yet. As students join your classes or submit quizzes, it will show up here in real time.</p>
+      {list.length === 0 ? (
+        <p style={{ margin: 0, padding: 18, fontSize: 12.5, color: t.subtext }}>Nothing yet. As a student takes a quiz in one of your classes, one live row will appear here per student and update as they go.</p>
       ) : (
-        <div className="td-scroll" style={{ maxHeight: 220, overflowY: 'auto' }}>
-          {activity.slice(0, 20).map((a) => (
-            <div key={a.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 16px', borderTop: `1px solid ${t.border}` }}>
+        <div className="td-scroll" style={{ maxHeight: 260, overflowY: 'auto' }}>
+          {list.map((s) => {
+            const isAway = s.status === 'away';
+            const isDone = s.status === 'done';
+            const statusColor = isDone ? t.green : isAway ? t.orange : t.blue;
+            const statusText = isDone
+              ? `Submitted — ${s.scorePercent ?? '—'}%`
+              : isAway
+                ? 'Left the quiz tab — penalty building up'
+                : `${s.answered ?? 0}/${s.total || '?'} questions answered`;
+            return (
+              <div key={s.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 16px', borderTop: `1px solid ${t.border}` }}>
+                <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <p style={{ margin: 0, fontSize: 12.5, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <span style={{ fontWeight: 700 }}>{s.studentName}</span>
+                    <span style={{ color: t.subtext }}> · {s.quizTitle}</span>
+                  </p>
+                  <p style={{ margin: '2px 0 0', fontSize: 11, color: statusColor, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {statusText}
+                    {!isDone && <TypingDots color={statusColor} />}
+                  </p>
+                  {!isDone && !isAway && s.lastAnswer && (
+                    <p style={{ margin: '2px 0 0', fontSize: 10.5, color: t.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      Just chose: <strong style={{ color: t.subtext }}>{s.lastAnswer}</strong>
+                    </p>
+                  )}
+                </div>
+                <button type="button" onClick={() => onViewSession(s)} className="td-btn"
+                  style={{ background: t.panel, border: 'none', borderRadius: 7, padding: '6px 11px', fontSize: 11, fontWeight: 700, color: t.text, cursor: 'pointer', flexShrink: 0 }}>
+                  View
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Opened by the "View" button on a live-activity row. Shows every event
+// recorded for that one student+quiz session, oldest events pushed down,
+// so a teacher who wants the play-by-play (every question answered, every
+// time the tab was left/returned to) can still see it without it cluttering
+// the main feed.
+function SessionHistoryModal({ session, onClose }) {
+  return (
+    <Modal onClose={onClose} width={420}>
+      <div style={{ padding: 22 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+          <div style={{ minWidth: 0 }}>
+            <h3 className="td-heading" style={{ margin: 0, fontSize: 15.5, color: t.text }}>{session.studentName}</h3>
+            <p style={{ margin: '4px 0 0', fontSize: 12, color: t.subtext }}>{session.quizTitle}</p>
+          </div>
+          <IconBtn icon={X} onClick={onClose} title="Close" />
+        </div>
+        <div className="td-scroll" style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {session.history.length === 0 ? (
+            <p style={{ margin: 0, fontSize: 12.5, color: t.subtext }}>No activity recorded yet.</p>
+          ) : session.history.map((h, i) => (
+            <div key={i} style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
               <span style={{ width: 7, height: 7, marginTop: 5, borderRadius: '50%', background: t.green, flexShrink: 0 }} />
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <p style={{ margin: 0, fontSize: 12.5, color: t.text }}>{a.text}</p>
-                <p style={{ margin: '2px 0 0', fontSize: 10.5, color: t.faint }}>{fmtRelative(a.at)}</p>
+              <div style={{ minWidth: 0 }}>
+                <p style={{ margin: 0, fontSize: 12.5, color: t.text }}>{h.text}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 10.5, color: t.faint }}>{fmtRelative(h.at)}</p>
               </div>
             </div>
           ))}
         </div>
-      )}
-    </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -851,7 +993,7 @@ function NoAssignmentsNotice({ show, onGoSettings }) {
 // FIX (requested pagination): notes and quizzes can pile up fast. Rather
 // than dumping the whole list on screen, show SHOW_MORE_STEP items and let
 // the teacher reveal more on demand. This one button is reused by every
-// paginated list (notes, quizzes, quiz results) below.
+// paginated list (notes, quizzes, quiz results, all marks) below.
 function ShowMoreButton({ remaining, onClick }) {
   if (remaining <= 0) return null;
   return (
@@ -1294,9 +1436,8 @@ function QuizPreviewModal({ quiz, onClose }) {
 
 function QuizzesDashboard({ quizzes, filter, setFilter, onView, onEdit, onTogglePublish, onDelete, onNewQuiz, onSchedule, busyAction, noAssignments, goSettings }) {
   const filtered = quizzes.filter((q) => (filter === 'all' ? true : filter === 'published' ? q.status === 'published' : q.status === 'draft'));
-  // FIX (requested pagination): same "show 3, then Show more" treatment as
-  // the notes dashboard, so a busy teacher's quiz list doesn't turn into an
-  // endless wall of cards.
+  // Same "show 3, then Show more" treatment as the notes dashboard, so a
+  // busy teacher's quiz list doesn't turn into an endless wall of cards.
   const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
   useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [filter, quizzes]);
   const stats = { total: quizzes.length, published: quizzes.filter((q) => q.status === 'published').length, draft: quizzes.filter((q) => q.status === 'draft').length };
@@ -1348,10 +1489,9 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 11 }}>
         <span style={{ fontSize: 11.5, fontWeight: 800, color: t.blue }}>Question {index + 1}</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {/* FIX: a per-question weight has existed in the database since the
-              "harder questions can count for more" migration, but nothing on
-              this screen ever let a teacher set it -- so every question was
-              silently worth 1 mark no matter what. */}
+          {/* A per-question weight has existed in the database since the
+              "harder questions can count for more" migration; this input
+              lets a teacher actually set it. */}
           <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: t.subtext }}>
             Worth
             <input type="number" min={1} max={100} value={q.marks ?? 1}
@@ -1731,9 +1871,14 @@ function ErrorBlock({ message, onRetry }) {
   );
 }
 
-function StudentsPage({ request, classFilter, activity, live }) {
+function StudentsPage({ request, classFilter, sessions, live, onViewSession }) {
   const { loading, error, data, reload } = useRemote(() => request('/students').then((r) => r.students), [request]);
   const [query, setQuery] = useState('');
+  // FIX (new feature -- "make that button clear and separated where I can
+  // find it"): a dedicated, explicitly-labelled action per student that
+  // opens the new bar-chart performance breakdown, instead of the average
+  // score badge being the only (easy to miss) performance signal on this row.
+  const [viewingPerformance, setViewingPerformance] = useState(null);
 
   if (loading) return <div className="td-page-pad" style={{ padding: 22 }}><CardsSkeleton count={3} /></div>;
   if (error) return <ErrorBlock message={error} onRetry={reload} />;
@@ -1756,7 +1901,7 @@ function StudentsPage({ request, classFilter, activity, live }) {
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or email" aria-label="Search students" style={{ ...inputStyle, width: 240 }} />
       </div>
 
-      <LiveActivityPanel activity={activity} live={live} />
+      <LiveActivityPanel sessions={sessions} live={live} onViewSession={onViewSession} />
 
       {students.length === 0 ? (
         <EmptyState icon={Users} title={data.length === 0 ? 'No students yet' : 'No matches'}
@@ -1769,23 +1914,110 @@ function StudentsPage({ request, classFilter, activity, live }) {
               <Chip tone="blue">{list.length} student{list.length === 1 ? '' : 's'}</Chip>
             </div>
             {list.map((s) => (
-              <div key={s.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) auto auto', gap: 14, alignItems: 'center', padding: '11px 16px', borderTop: `1px solid ${t.border}` }}>
+              <div key={s.id} style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 2fr) auto auto auto', gap: 14, alignItems: 'center', padding: '11px 16px', borderTop: `1px solid ${t.border}` }}>
+                <StudentAvatar name={s.fullName} src={s.profileImage} size={30} />
                 <div style={{ minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.fullName}</p>
                   <p style={{ margin: '2px 0 0', fontSize: 11, color: t.subtext, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.email}</p>
                 </div>
                 <span style={{ fontSize: 11.5, color: t.subtext, whiteSpace: 'nowrap' }}>{s.quizzesDone} quiz{s.quizzesDone === 1 ? '' : 'zes'} done</span>
                 <Badge bg={s.averageScore === null ? t.panel : t.greenSoft} color={s.averageScore === null ? t.subtext : t.green}>{s.averageScore === null ? 'No scores' : `${s.averageScore}% avg`}</Badge>
+                <button type="button" onClick={() => setViewingPerformance(s)}
+                  className="td-btn" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: t.blueSoft, border: 'none', borderRadius: 7, padding: '6px 11px', fontSize: 11, fontWeight: 700, color: t.blue, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  <BarChart3 size={12} /> View performance
+                </button>
               </div>
             ))}
           </div>
         ))
       )}
+
+      {viewingPerformance && (
+        <StudentPerformanceModal student={viewingPerformance} request={request} onClose={() => setViewingPerformance(null)} />
+      )}
     </div>
   );
 }
 
-function QuizResultsDetail({ quiz, request, onBack }) {
+// FIX (new feature): a clear, separate way (the "View performance" button
+// above) to see every quiz result for ONE student as a filterable bar chart
+// -- subject and date included on every bar, not just the class-wide average
+// -- instead of that average badge being the only performance signal.
+// Reuses GET /marks (already scoped to this teacher's own classes/subjects)
+// and simply narrows it to this one student on the client, the same pattern
+// MarksPage already uses for class/subject filtering.
+function StudentPerformanceModal({ student, request, onClose }) {
+  const { loading, error, data, reload } = useRemote(() => request('/marks').then((r) => r.marks), [request]);
+  const [subjectFilter, setSubjectFilter] = useState('All Subjects');
+
+  const mine = (data || []).filter((r) => r.studentId === student.id);
+  const subjectOptions = ['All Subjects', ...new Set(mine.map((r) => r.subject))];
+  const filtered = mine
+    .filter((r) => subjectFilter === 'All Subjects' || r.subject === subjectFilter)
+    .sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+  const average = mine.length ? Math.round(mine.reduce((sum, r) => sum + (r.scorePercent || 0), 0) / mine.length) : null;
+
+  return (
+    <Modal onClose={onClose} width={600}>
+      <div style={{ padding: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <StudentAvatar name={student.fullName} src={student.profileImage} size={34} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h3 className="td-heading" style={{ margin: 0, fontSize: 15.5, color: t.text }}>{student.fullName}</h3>
+            <p style={{ margin: '2px 0 0', fontSize: 11.5, color: t.subtext }}>{student.email} · {student.className}</p>
+          </div>
+          <IconBtn icon={X} onClick={onClose} title="Close" />
+        </div>
+
+        {loading && <CardsSkeleton count={2} />}
+        {error && <Notice tone="red" action={<PrimaryButton variant="outline" icon={RefreshCw} onClick={reload}>Try again</PrimaryButton>}>{error}</Notice>}
+
+        {data && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+              <Chip tone="blue">{mine.length} quiz{mine.length === 1 ? '' : 'zes'} done</Chip>
+              <Chip tone="green">{average === null ? 'No scores yet' : `${average}% average`}</Chip>
+            </div>
+
+            {mine.length > 0 && (
+              <div style={{ marginBottom: 14 }}>
+                <Dropdown value={subjectFilter} options={subjectOptions} onChange={setSubjectFilter} icon={Filter} />
+              </div>
+            )}
+
+            {filtered.length === 0 ? (
+              <EmptyState icon={BarChart3} title="No quizzes yet" text="This student hasn't submitted any quizzes yet." />
+            ) : (
+              <div className="td-scroll" style={{ maxHeight: 380, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {filtered.map((r) => (
+                  <div key={r.attemptId} style={{ padding: '10px 12px', border: `1px solid ${t.border}`, borderRadius: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, fontSize: 12.5, marginBottom: 6 }}>
+                      <span style={{ fontWeight: 700, color: t.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.quizTitle}</span>
+                      <span style={{ fontWeight: 700, whiteSpace: 'nowrap', color: (r.scorePercent || 0) >= 50 ? t.green : t.red }}>{r.scorePercent}%</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginBottom: 8, flexWrap: 'wrap' }}>
+                      <Chip tone="green">{r.subject}</Chip>
+                      <Chip tone="neutral">{fmtDateTime(r.submittedAt)}</Chip>
+                    </div>
+                    <div style={{ height: 7, borderRadius: 4, background: t.panel }}>
+                      <div style={{ width: `${r.scorePercent || 0}%`, height: '100%', borderRadius: 4, background: (r.scorePercent || 0) >= 50 ? t.green : t.orange }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// FIX (student photos + review): each result row now shows the student's
+// real avatar, and a "Review" button opens the same question-by-question
+// breakdown the student sees for their own attempt (via onReview, wired up
+// in Teacher() to TeacherQuizReviewModal below).
+function QuizResultsDetail({ quiz, request, onBack, onReview }) {
   const { loading, error, data, reload } = useRemote(() => request(`/quizzes/${quiz.id}/results`), [request, quiz.id]);
   return (
     <div className="td-fade td-page-pad" style={{ padding: 22, maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1793,10 +2025,10 @@ function QuizResultsDetail({ quiz, request, onBack }) {
         <IconBtn icon={ArrowLeft} onClick={onBack} title="Back to results" />
         <div style={{ minWidth: 0 }}>
           <h2 className="td-heading" style={{ margin: 0, fontSize: 16, color: t.text }}>{quiz.title}</h2>
-          {/* FIX (requested filter/clarity): the class this quiz belongs to was
-              shown, but the SUBJECT was easy to miss -- important the moment a
-              teacher teaches the same class for two subjects. Both are now
-              shown as chips, matching how they appear everywhere else. */}
+          {/* The class this quiz belongs to was shown, but the SUBJECT was
+              easy to miss -- important the moment a teacher teaches the same
+              class for two subjects. Both are now shown as chips, matching
+              how they appear everywhere else. */}
           <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
             <Chip tone="blue">{quiz.className}</Chip>
             <Chip tone="green">{quiz.subject}</Chip>
@@ -1819,7 +2051,8 @@ function QuizResultsDetail({ quiz, request, onBack }) {
             {data.results.length === 0 ? (
               <p style={{ margin: 0, padding: 20, fontSize: 13, color: t.subtext }}>No student has started this quiz yet.</p>
             ) : data.results.map((r) => (
-              <div key={r.attemptId} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) auto auto', gap: 14, alignItems: 'center', padding: '11px 16px', borderTop: `1px solid ${t.border}` }}>
+              <div key={r.attemptId} style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0, 2fr) auto auto auto', gap: 14, alignItems: 'center', padding: '11px 16px', borderTop: `1px solid ${t.border}` }}>
+                <StudentAvatar name={r.studentName} src={r.studentImage} size={28} />
                 <div style={{ minWidth: 0 }}>
                   <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.studentName}</p>
                   <p style={{ margin: '2px 0 0', fontSize: 11, color: t.subtext }}>
@@ -1831,39 +2064,27 @@ function QuizResultsDetail({ quiz, request, onBack }) {
                 {r.submittedAt
                   ? <Badge bg={r.scorePercent >= 50 ? t.greenSoft : t.redSoft} color={r.scorePercent >= 50 ? t.green : t.red}>{r.scorePercent}%</Badge>
                   : <Badge bg={t.orangeSoft} color={t.orange}>Working</Badge>}
+                {r.submittedAt ? (
+                  <button type="button" onClick={() => onReview({ quizId: quiz.id, quizTitle: quiz.title, studentId: r.studentId, studentName: r.studentName, studentImage: r.studentImage })}
+                    className="td-btn" style={{ background: t.panel, border: 'none', borderRadius: 7, padding: '6px 11px', fontSize: 11, fontWeight: 700, color: t.text, cursor: 'pointer' }}>
+                    Review
+                  </button>
+                ) : <span />}
               </div>
             ))}
           </div>
 
-          {data.questionStats.length > 0 && (
-            <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
-              <div style={{ padding: '11px 16px', background: t.panel }}>
-                <span className="td-heading" style={{ fontSize: 13, fontWeight: 700 }}>Question difficulty</span>
-                <span style={{ marginLeft: 8, fontSize: 11, color: t.subtext }}>Share of submitted students who answered correctly</span>
-              </div>
-              {data.questionStats.map((s, i) => (
-                <div key={s.id} style={{ padding: '11px 16px', borderTop: `1px solid ${t.border}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12.5 }}>
-                    <span style={{ color: t.text, fontWeight: 600 }}>{i + 1}. {s.question}</span>
-                    <span style={{ color: t.subtext, whiteSpace: 'nowrap' }}>{s.percentCorrect === null ? 'No answers' : `${s.percentCorrect}%`}</span>
-                  </div>
-                  <div style={{ marginTop: 6, height: 6, borderRadius: 4, background: t.panel }}>
-                    <div style={{ width: `${s.percentCorrect || 0}%`, height: '100%', borderRadius: 4, background: (s.percentCorrect || 0) >= 50 ? t.green : t.orange }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </>
       )}
     </div>
   );
 }
 
-// FIX (requested filter): quiz results can now be narrowed by class AND
-// subject (subjectFilter), and the list is paginated (Show more) like every
-// other list on this dashboard, so a school with many quizzes stays usable.
-function ResultsPage({ quizzes, request, classFilter, subjectFilter }) {
+// Quiz results can now be narrowed by class AND subject (subjectFilter), and
+// the list is paginated (Show more) like every other list on this
+// dashboard, so a school with many quizzes stays usable. onReview is passed
+// straight through to QuizResultsDetail.
+function ResultsPage({ quizzes, request, classFilter, subjectFilter, onReview }) {
   const [openQuiz, setOpenQuiz] = useState(null);
   const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
 
@@ -1875,7 +2096,7 @@ function ResultsPage({ quizzes, request, classFilter, subjectFilter }) {
 
   useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [classFilter, subjectFilter, quizzes]);
 
-  if (openQuiz) return <QuizResultsDetail quiz={openQuiz} request={request} onBack={() => setOpenQuiz(null)} />;
+  if (openQuiz) return <QuizResultsDetail quiz={openQuiz} request={request} onBack={() => setOpenQuiz(null)} onReview={onReview} />;
 
   const visible = list.slice(0, visibleCount);
 
@@ -1903,6 +2124,208 @@ function ResultsPage({ quizzes, request, classFilter, subjectFilter }) {
         </>
       )}
     </div>
+  );
+}
+
+/* ----------------------------------- ALL MARKS -------------------------------- */
+
+const thStyle = { textAlign: 'left', padding: '10px 14px', fontSize: 11, fontWeight: 700, color: t.subtext, whiteSpace: 'nowrap' };
+const tdStyle = { padding: '10px 14px', fontSize: 12.5, color: t.text, verticalAlign: 'middle' };
+
+function SortableTh({ label, active, dir, onClick }) {
+  return (
+    <th style={{ ...thStyle, cursor: 'pointer', userSelect: 'none' }} onClick={onClick}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        {label} <ArrowUpDown size={11} color={active ? t.blue : t.faint} style={{ transform: active && dir === 'desc' ? 'rotate(180deg)' : 'none' }} />
+      </span>
+    </th>
+  );
+}
+
+// FIX (new feature -- organization pass): one flat, sortable, searchable
+// table of every mark across every quiz/class/subject this teacher owns --
+// student photo, name, subject, quiz, class, date, score, and a Review
+// action. Filters by the same class/subject dropdowns in the header, plus
+// its own search box and per-quiz filter, and sorts by clicking any column
+// header. Paginated with the same "Show more" pattern as every other list.
+function MarksPage({ request, classFilter, subjectFilter, onReview }) {
+  const { loading, error, data, reload } = useRemote(() => request('/marks').then((r) => r.marks), [request]);
+  const [query, setQuery] = useState('');
+  const [quizFilter, setQuizFilter] = useState('All Quizzes');
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+  const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
+
+  useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [query, quizFilter, classFilter, subjectFilter]);
+
+  if (loading) return <div className="td-page-pad" style={{ padding: 22 }}><CardsSkeleton count={3} /></div>;
+  if (error) return <ErrorBlock message={error} onRetry={reload} />;
+
+  const q = query.trim().toLowerCase();
+  let list = data.filter((r) =>
+    (classFilter === 'All Classes' || r.className === classFilter) &&
+    (subjectFilter === undefined || subjectFilter === 'All Subjects' || r.subject === subjectFilter) &&
+    (quizFilter === 'All Quizzes' || r.quizTitle === quizFilter) &&
+    (!q || r.studentName.toLowerCase().includes(q) || (r.studentEmail || '').toLowerCase().includes(q))
+  );
+
+  const quizOptions = ['All Quizzes', ...new Set(data.map((r) => r.quizTitle))];
+
+  const dir = sortDir === 'asc' ? 1 : -1;
+  list = [...list].sort((a, b) => {
+    switch (sortKey) {
+      case 'name': return a.studentName.localeCompare(b.studentName) * dir;
+      case 'subject': return a.subject.localeCompare(b.subject) * dir;
+      case 'quiz': return a.quizTitle.localeCompare(b.quizTitle) * dir;
+      case 'score': return ((a.scorePercent || 0) - (b.scorePercent || 0)) * dir;
+      default: return (new Date(a.submittedAt) - new Date(b.submittedAt)) * dir;
+    }
+  });
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(key); setSortDir(key === 'score' ? 'desc' : 'asc'); }
+  };
+
+  const visible = list.slice(0, visibleCount);
+
+  return (
+    <div className="td-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div>
+        <p className="td-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>All marks</p>
+        <p style={{ margin: '3px 0 0', fontSize: 13, color: t.subtext }}>Every submitted quiz across your classes, in one sortable, filterable table.</p>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: '1 1 220px' }}>
+          <Search size={14} color={t.faint} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search student name or email"
+            style={{ ...inputStyle, paddingLeft: 30, background: '#fff' }} />
+        </div>
+        <Dropdown value={quizFilter} options={quizOptions} onChange={setQuizFilter} icon={PenLine} />
+      </div>
+
+      {list.length === 0 ? (
+        <EmptyState icon={BarChart3} title="No marks yet" text="Once students submit quizzes, their marks will appear here." />
+      ) : (
+        <>
+          <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
+            <div className="td-scroll" style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+                <thead>
+                  <tr style={{ background: t.panel }}>
+                    <th style={thStyle}>Student</th>
+                    <SortableTh label="Subject" active={sortKey === 'subject'} dir={sortDir} onClick={() => toggleSort('subject')} />
+                    <SortableTh label="Quiz" active={sortKey === 'quiz'} dir={sortDir} onClick={() => toggleSort('quiz')} />
+                    <th style={thStyle}>Class</th>
+                    <SortableTh label="Date" active={sortKey === 'date'} dir={sortDir} onClick={() => toggleSort('date')} />
+                    <SortableTh label="Score" active={sortKey === 'score'} dir={sortDir} onClick={() => toggleSort('score')} />
+                    <th style={thStyle}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visible.map((r) => (
+                    <tr key={r.attemptId} style={{ borderTop: `1px solid ${t.border}` }}>
+                      <td style={tdStyle}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                          <StudentAvatar name={r.studentName} src={r.studentImage} size={28} />
+                          <div style={{ minWidth: 0 }}>
+                            <p style={{ margin: 0, fontSize: 12.5, fontWeight: 600, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 160 }}>{r.studentName}</p>
+                            <p style={{ margin: '1px 0 0', fontSize: 10.5, color: t.subtext }}>{r.studentEmail}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td style={tdStyle}><Chip tone="neutral">{r.subject}</Chip></td>
+                      <td style={tdStyle}>{r.quizTitle}</td>
+                      <td style={tdStyle}><Chip tone="blue">{r.className}</Chip></td>
+                      <td style={tdStyle}>{fmtDateTime(r.submittedAt)}</td>
+                      <td style={tdStyle}><Badge bg={r.scorePercent >= 50 ? t.greenSoft : t.redSoft} color={r.scorePercent >= 50 ? t.green : t.red}>{r.scorePercent}%</Badge></td>
+                      <td style={tdStyle}>
+                        <button type="button" onClick={() => onReview({ quizId: r.quizId, quizTitle: r.quizTitle, studentId: r.studentId, studentName: r.studentName, studentImage: r.studentImage })}
+                          className="td-btn" style={{ background: t.panel, border: 'none', borderRadius: 7, padding: '6px 11px', fontSize: 11, fontWeight: 700, color: t.text, cursor: 'pointer' }}>
+                          Review
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <ShowMoreButton remaining={list.length - visibleCount} onClick={() => setVisibleCount((n) => n + SHOW_MORE_STEP)} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// FIX (new feature): the teacher-facing equivalent of the student's own
+// QuizReviewModal in student.jsx -- same question-by-question breakdown
+// (their answer vs. the correct one), just opened from anywhere a "Review"
+// button appears (Quiz results, All marks) instead of only being available
+// to the student for their own attempt.
+function TeacherQuizReviewModal({ target, request, onClose }) {
+  const { loading, error, data, reload } = useRemote(
+    () => request(`/quizzes/${target.quizId}/students/${target.studentId}/review`),
+    [request, target.quizId, target.studentId]
+  );
+
+  return (
+    <Modal onClose={onClose} width={620}>
+      <div style={{ padding: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <StudentAvatar name={target.studentName} src={target.studentImage} size={34} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h3 className="td-heading" style={{ margin: 0, fontSize: 15.5, color: t.text }}>{target.studentName}</h3>
+            <p style={{ margin: '2px 0 0', fontSize: 11.5, color: t.subtext }}>{target.quizTitle}</p>
+          </div>
+          <IconBtn icon={X} onClick={onClose} title="Close" />
+        </div>
+
+        {loading && <CardsSkeleton count={2} />}
+        {error && <Notice tone="red" action={<PrimaryButton variant="outline" icon={RefreshCw} onClick={reload}>Try again</PrimaryButton>}>{error}</Notice>}
+        {data && (
+          <>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+              <Badge bg={t.greenSoft} color={t.green}>{data.result.scorePercent}%</Badge>
+              <Chip tone="neutral">{data.result.finalScore}/{data.result.total} marks</Chip>
+              {data.result.penaltyMarks > 0 && <Chip tone="orange">-{data.result.penaltyMarks} for leaving the tab</Chip>}
+              <Chip tone="blue">Submitted {fmtDateTime(data.result.submittedAt)}</Chip>
+            </div>
+            <div className="td-scroll" style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {data.questions.map((q, i) => {
+                const correctOption = q.options.find((o) => o.isCorrect);
+                const gotItRight = q.selectedOptionId && correctOption && q.selectedOptionId === correctOption.id;
+                return (
+                  <div key={q.id} style={{ border: `1px solid ${gotItRight ? t.green : (q.selectedOptionId ? t.red : t.border)}`, borderRadius: 8, padding: 13 }}>
+                    <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700, color: t.text }}>
+                      Q{i + 1}. {q.question} <span style={{ fontWeight: 500, color: t.subtext, fontSize: 11 }}>({q.marks ?? 1} mark{(q.marks ?? 1) === 1 ? '' : 's'})</span>
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {q.options.map((o) => {
+                        const isSelected = q.selectedOptionId === o.id;
+                        const isCorrect = o.isCorrect;
+                        let style = { borderColor: t.border, background: '#fff', color: t.text };
+                        if (isCorrect) style = { borderColor: t.green, background: t.greenSoft, color: t.green };
+                        else if (isSelected) style = { borderColor: t.red, background: t.redSoft, color: t.red };
+                        return (
+                          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: `1px solid ${style.borderColor}`, background: style.background, color: style.color, borderRadius: 7, padding: '7px 10px', fontSize: 12 }}>
+                            <span style={{ flex: 1, fontWeight: 600 }}>{o.optionText}</span>
+                            {isCorrect && <CheckCircle2 size={13} />}
+                            {isSelected && !isCorrect && <X size={13} />}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {!q.selectedOptionId && <p style={{ margin: '8px 0 0', fontSize: 11, fontWeight: 700, color: t.orange }}>Did not answer this question.</p>}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -2027,9 +2450,9 @@ export default function Teacher({ onSignOut }) {
   const [section, setSection] = useState(getStoredSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState('All Classes');
-  // FIX (requested filter): subject filter alongside the class filter, so a
-  // teacher who teaches several subjects in one class can narrow everything
-  // -- notes, quizzes, and results -- down to just one.
+  // Subject filter alongside the class filter, so a teacher who teaches
+  // several subjects in one class can narrow everything -- notes, quizzes,
+  // and results -- down to just one.
   const [selectedSubject, setSelectedSubject] = useState('All Subjects');
   const [notesFilter, setNotesFilter] = useState('all');
   const [quizzesFilter, setQuizzesFilter] = useState('all');
@@ -2045,17 +2468,37 @@ export default function Teacher({ onSignOut }) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [busyAction, setBusyAction] = useState(null);
 
-  // Realtime connection state + a rolling feed of student activity (joins,
-  // quiz submissions) fed by the socket effect below. See LiveActivityPanel.
+  // FIX (new feature): the target of an open per-student quiz review modal
+  // ({ quizId, quizTitle, studentId, studentName, studentImage }), opened
+  // from either Quiz results or All marks via onReview.
+  const [teacherReview, setTeacherReview] = useState(null);
+  const openTeacherReview = useCallback((target) => setTeacherReview(target), []);
+
+  // Realtime connection state.
   const [live, setLive] = useState(false);
-  const [activity, setActivity] = useState([]);
-  const pushActivity = useCallback((text) => {
-    setActivity((list) => [{ id: uid(), text, at: new Date().toISOString() }, ...list].slice(0, 50));
+  // `sessions` is a map keyed by "quizId:studentId" holding ONE row per live
+  // student+quiz session that is updated in place; individual events are
+  // recorded inside that session's own `history` array instead of a
+  // constantly-growing flat feed. See LiveActivityPanel / SessionHistoryModal
+  // above and the updateSession() helper + socket handlers below.
+  const [sessions, setSessions] = useState({});
+  const [viewingSession, setViewingSession] = useState(null);
+
+  const updateSession = useCallback((key, patch, historyText) => {
+    setSessions((prev) => {
+      const existing = prev[key] || { key, history: [] };
+      const nowIso = new Date().toISOString();
+      const next = {
+        ...existing,
+        ...patch,
+        lastAt: nowIso,
+        history: historyText ? [{ text: historyText, at: nowIso }, ...existing.history].slice(0, 40) : existing.history,
+      };
+      return { ...prev, [key]: next };
+    });
+    // Keep an open detail modal in sync with the live row it's showing.
+    setViewingSession((cur) => (cur && cur.key === key ? { ...cur, ...patch } : cur));
   }, []);
-  // Tracks which students are currently away from a quiz tab (`${quizId}:${studentId}`
-  // -> true), purely so the socket handlers above only log the away/return
-  // transitions instead of every once-a-second penalty ping.
-  const awayRef = useRef({});
 
   // The open editor registers a function here that saves pending work (or asks
   // before discarding it). Every way of leaving the editor goes through it.
@@ -2166,8 +2609,11 @@ const load = useCallback(async () => {
   // sign-out, and Socket.IO keeps retrying on its own. Two kinds of events
   // land here:
   //   - Student activity for classes this teacher teaches (student:joined,
-  //     quiz:submission) -> fills the live activity feed and nudges the
-  //     relevant counts, so the teacher can watch it happen in real time.
+  //     quiz:studentStarted, quiz:studentProgress, quiz:studentAway,
+  //     quiz:studentReturned, quiz:submission) -> collapsed into `sessions`,
+  //     one live row per student+quiz (see updateSession above), so the
+  //     teacher can watch it happen in real time without the feed turning
+  //     into an unreadable wall of one-line events.
   //   - The teacher's OWN edits echoed back (note:saved/deleted,
   //     quiz:saved/deleted) -> keeps a second open tab/device in sync.
   //
@@ -2209,34 +2655,64 @@ const load = useCallback(async () => {
     });
 
     socket.on('student:joined', (info) => {
-      pushActivity(`${info.fullName} joined ${info.className}.`);
       toast(`${info.fullName} joined ${info.className}.`);
     });
 
-    // FIX (new): the server has always emitted these three events the
-    // moment a student starts a quiz, leaves the tab, or comes back, but
-    // nothing here was listening for them, so a teacher had no way to watch
-    // a quiz happen live. `awayRef` tracks who is currently away so the
-    // per-second penalty pings (see student.jsx) don't flood this feed —
-    // only the start/leave/return transitions are logged.
+    // Each of these five all resolve to the SAME live row (keyed by
+    // quizId:studentId), updated in place, with the individual event text
+    // preserved in that row's history for "View" to show.
     socket.on('quiz:studentStarted', (info) => {
-      pushActivity(`${info.studentName} started "${info.quizTitle}".`);
+      const key = `${info.quizId}:${info.studentId}`;
+      updateSession(key, {
+        studentId: info.studentId,
+        studentName: info.studentName,
+        quizId: info.quizId,
+        quizTitle: info.quizTitle,
+        status: 'active',
+        answered: 0,
+        total: info.total || 0,
+      }, `Started "${info.quizTitle}".`);
     });
+
+    // FIX (live answer preview): info.lastAnswer / info.lastQuestion (sent
+    // by student.js's POST /quizzes/:id/answer) let this row show what the
+    // student just picked, like a lightweight "typing…" preview, not only
+    // "3/10 answered".
+    socket.on('quiz:studentProgress', (info) => {
+      const key = `${info.quizId}:${info.studentId}`;
+      updateSession(key, {
+        studentId: info.studentId,
+        studentName: info.studentName,
+        quizId: info.quizId,
+        quizTitle: info.quizTitle,
+        status: 'active',
+        answered: info.answered,
+        total: info.total,
+        lastAnswer: info.lastAnswer,
+        lastQuestion: info.lastQuestion,
+      }, `Answered question ${info.answered} of ${info.total}${info.lastAnswer ? ` — chose "${info.lastAnswer}"` : ''}.`);
+    });
+
     socket.on('quiz:studentAway', (info) => {
       const key = `${info.quizId}:${info.studentId}`;
-      if (!awayRef.current[key]) {
-        awayRef.current[key] = true;
-        pushActivity(`${info.studentName} left the "${info.quizTitle}" tab — penalty is building up.`);
-      }
+      updateSession(key, {
+        studentId: info.studentId,
+        studentName: info.studentName,
+        quizId: info.quizId,
+        quizTitle: info.quizTitle,
+        status: 'away',
+        penaltyMarks: info.penaltyMarks,
+      }, `Left the tab — penalty is building up.`);
     });
+
     socket.on('quiz:studentReturned', (info) => {
       const key = `${info.quizId}:${info.studentId}`;
-      delete awayRef.current[key];
-      pushActivity(`${info.studentName} came back to "${info.quizTitle}".`);
+      updateSession(key, { status: 'active' }, `Came back to the tab.`);
     });
 
     socket.on('quiz:submission', (info) => {
-      pushActivity(`${info.studentName} scored ${info.scorePercent}% on "${info.quizTitle}".`);
+      const key = `${info.quizId}:${info.studentId}`;
+      updateSession(key, { status: 'done', scorePercent: info.scorePercent }, `Submitted — scored ${info.scorePercent}%.`);
       toast(`${info.studentName} submitted "${info.quizTitle}" — ${info.scorePercent}%.`);
       setQuizzes((list) => list.map((q) => (q.id === info.quizId ? { ...q, submittedCount: (q.submittedCount || 0) + 1 } : q)));
     });
@@ -2253,7 +2729,7 @@ const load = useCallback(async () => {
       setLive(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast, pushActivity, upsertNote, upsertQuiz]);
+  }, [toast, updateSession, upsertNote, upsertQuiz]);
 
   /* ---- navigation (always passes through the editor's leave guard) ---- */
   const guarded = useCallback(async (fn) => {
@@ -2345,7 +2821,7 @@ const load = useCallback(async () => {
     }
   };
 
-  const titles = { notes: 'Notes', noteEditor: 'Note editor', quizzes: 'Quizzes', quizEditor: 'Quiz builder', students: 'Students', results: 'Quiz results', settings: 'Settings' };
+  const titles = { notes: 'Notes', noteEditor: 'Note editor', quizzes: 'Quizzes', quizEditor: 'Quiz builder', students: 'Students', results: 'Quiz results', marks: 'All marks', settings: 'Settings' };
   const goSettings = () => go('settings');
 
   if (boot === 'loading') return <div className="td-root" style={{ minHeight: '100vh' }}><GlobalStyle /><PageSkeleton /></div>;
@@ -2411,8 +2887,9 @@ const load = useCallback(async () => {
               <QuizEditor key={editingQuiz.id || 'new-quiz'} initial={editingQuiz} assignments={assignments} request={request}
                 onSaved={upsertQuiz} onClose={closeQuizEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} />
             )}
-            {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} activity={activity} live={live} />}
-            {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} subjectFilter={selectedSubject} />}
+            {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} sessions={sessions} live={live} onViewSession={setViewingSession} />}
+            {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />}
+            {section === 'marks' && <MarksPage request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />}
             {section === 'settings' && (
               <SettingsPage me={me} assignments={assignments} classes={classes} request={request} toast={toast}
                 onChange={(nextAssignments, nextClasses) => { setAssignments(nextAssignments); setClasses(nextClasses); }} />
@@ -2423,6 +2900,8 @@ const load = useCallback(async () => {
 
       {previewNote && <NotePreviewModal note={previewNote} onClose={() => setPreviewNote(null)} />}
       {previewQuiz && <QuizPreviewModal quiz={previewQuiz} onClose={() => setPreviewQuiz(null)} />}
+      {viewingSession && <SessionHistoryModal session={viewingSession} onClose={() => setViewingSession(null)} />}
+      {teacherReview && <TeacherQuizReviewModal target={teacherReview} request={request} onClose={() => setTeacherReview(null)} />}
       {scheduleQuiz && <ScheduleModal quiz={scheduleQuiz} saving={scheduleSaving} error={scheduleError} onCancel={() => setScheduleQuiz(null)} onSave={saveSchedule} />}
       {confirmDelete && (
         <ConfirmModal
