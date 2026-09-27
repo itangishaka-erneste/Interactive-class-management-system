@@ -72,7 +72,23 @@ const MEMBER_API_PATH = { teacher: "teacher", student: "student" };
 // refresh on any dashboard doesn't lose the sign-in.
 const ADMIN_SESSION_KEY = "ecw_admin_session";
 const SUPERADMIN_SESSION_KEY = "ecw_superadmin_session";
-const USER_SESSION_KEY = "ecw_user_session";
+// FIX (root cause of "Your login session is missing" on Teacher.jsx and the
+// silent bounce-back to home on Student.jsx): this used to be a single
+// shared USER_SESSION_KEY = "ecw_user_session" that every member role wrote
+// to. Teacher.jsx and Student.jsx were BOTH updated a while ago to read from
+// their own role-specific keys ("ecw_teacher_session" and
+// "ecw_student_session" respectively -- see the USER_SESSION_KEY comments in
+// those files) specifically so a teacher and a student signed in on the same
+// browser don't clobber each other's token. This file was never updated to
+// match: it kept writing every login to the old shared key, so
+// getSession() in Teacher.jsx/Student.jsx always found nothing, treated it
+// as "no token", and Teacher.jsx surfaced its boot error while Student.jsx's
+// requests came back 401 and triggered a real sign-out back to "/". Writing
+// to a per-role key here closes that gap.
+const MEMBER_SESSION_KEY = {
+  teacher: "ecw_teacher_session",
+  student: "ecw_student_session",
+};
 
 // Steps shown in the "connecting" loading overlay.
 const LOADING_STEPS = [
@@ -794,6 +810,13 @@ export default function EasyClassWork() {
   // same server Teacher.jsx talks to. The token stored afterwards is the
   // server's real session token, so every later /api/teacher/* call
   // succeeds instead of bouncing back to "/" with a 401.
+  //
+  // FIX: the token used to be saved under one shared USER_SESSION_KEY no
+  // matter which role signed in, while Teacher.jsx/Student.jsx each read
+  // from their OWN role-specific key. That meant getSession() on the
+  // dashboard side never found the token this function had just saved. It
+  // now writes to MEMBER_SESSION_KEY[role], matching what each dashboard
+  // actually reads.
   // ------------------------------------------------------------------
   async function signInMember(role, account) {
     setFormError("");
@@ -834,7 +857,7 @@ export default function EasyClassWork() {
         return;
       }
 
-      localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ token }));
+      localStorage.setItem(MEMBER_SESSION_KEY[role], JSON.stringify({ token }));
       setAuthView(null);
 
       if (role === "teacher") {
@@ -1008,9 +1031,13 @@ export default function EasyClassWork() {
     }
   };
 
+  // FIX: this used to remove the shared USER_SESSION_KEY, which — now that
+  // sign-in writes to a role-specific key — would no longer actually clear
+  // anything for a teacher who backs out of the class-picker step, leaving a
+  // half-finished login token behind. It now clears the teacher's own key.
   const closeTeacherStep = () => {
     setTeacherStep(null);
-    localStorage.removeItem(USER_SESSION_KEY);
+    localStorage.removeItem(MEMBER_SESSION_KEY.teacher);
   };
 
   // ------------------------------------------------------------------
