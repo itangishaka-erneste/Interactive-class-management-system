@@ -745,11 +745,11 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
   return (
     <div style={{ width: 240, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '18px 14px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 16px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <div style={{ width: 30, height: 30, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <img src={logo} alt="Easy Class" style={{ width: '100%', height: '100%' }} />
+             <img src={logo} alt="Easy Class" style={{ width: 40, height: 40, objectFit: 'contain', background: 'transparent' }} />
           </div>
           <div>
+   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <div style={{ width: 30, height: 30, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <span className="td-heading" style={{ fontSize: 14.5, fontWeight: 700, color: t.text, display: 'block', letterSpacing: -0.2 }}>Easy Class</span>
             <span style={{ fontSize: 10.5, color: t.subtext }}>Teacher workspace</span>
           </div>
