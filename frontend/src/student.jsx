@@ -20,12 +20,12 @@ import {
   ArrowLeft,
   ArrowRight,
   Award,
-  AlertTriangle,
-  ShieldAlert,
   Timer,
   MessageSquare,
   Send,
-  ChevronRight
+  ChevronRight,
+  School,
+  Check,
 } from "lucide-react";
 
 /* ============================================================================
@@ -43,14 +43,57 @@ const RED_SOFT = "#FEECEC";
 /* ============================================================================
    CONFIG & HELPERS
    ============================================================================ */
-const API_BASE = (typeof window !== "undefined" && window.ECW_API_BASE) || "https://easy-class-work-records.onrender.com";
-const USER_SESSION_KEY = "ecw_user_session";
+// FIX: this used to default straight to the hosted Render backend, which is
+// wrong the moment you run the app locally. You sign in against your LOCAL
+// server (a token signed with the LOCAL JWT_SECRET), but every other call —
+// /me, /notes, /quizzes, and the socket handshake — was going to a DIFFERENT
+// server with a DIFFERENT JWT_SECRET. That server rejects the token as
+// invalid every single time, which is exactly why the student kept getting
+// bounced back to sign-in, and why published notes/quizzes never showed up
+// (the student was reading a completely different database). This mirrors
+// the same fix already applied to teacher.jsx: same-origin by default,
+// explicit override only when one is actually configured.
+const API_BASE =
+  (typeof window !== "undefined" && window.ECW_API_BASE) ||
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) ||
+  (typeof window !== "undefined" ? window.location.origin : "");
+// FIX (root cause of the "please sign in again" bug / broken live updates):
+// this used to be "ecw_user_session" -- the EXACT SAME localStorage key
+// teacher.jsx uses. On a browser where a teacher and a student are both
+// signed in (two tabs, or a teacher checking their own student view), the
+// sliding-session token renewal (saveRenewedToken below) writes back to this
+// key on every single request, from EITHER dashboard. Whichever role made
+// the most recent request would silently overwrite the other's token. The
+// next request from the other role then sent, say, a *teacher* token to a
+// student-only route, which classroom.js's requireMember() correctly
+// rejects with "Please sign in again as a student." -- exactly the
+// confusing error this produced, right when a student started a quiz (a
+// burst of requests: /start, then /answer and /penalty repeatedly) while a
+// teacher was watching the Students page. It also explains realtime updates
+// dying (a socket reconnect grabs whatever token is in this slot at that
+// moment) and refreshes occasionally landing back on sign-in. Giving each
+// dashboard its own storage key removes the collision entirely.
+const USER_SESSION_KEY = "ecw_student_session";
+const SHOW_MORE_STEP = 3;
 
-// FIX: this used to be missing entirely. setupClassroomSocket(io) on the
-// backend mounts a Socket.IO namespace the same way Superadmin.js does for
-// "/superadmin" -- named "/classroom" to match. If your classroom.js uses a
-// different namespace string, change it here (and in teacher.jsx) to match.
+// Socket.IO namespace classroom.js's setupClassroomSocket(io) mounts, the
+// same one teacher.jsx connects to. Change here (and in teacher.jsx) if your
+// classroom.js uses a different namespace string.
 const CLASSROOM_SOCKET_NAMESPACE = "/classroom";
+
+// FIX: reloading the page used to always dump the student back on "Home"
+// even if they were on "Notes" or "Quizzes". The active tab is now
+// remembered here and restored on boot, so a refresh stays on the same page.
+const NAV_STORAGE_KEY = "ecw_student_section";
+const NAV_KEYS = ["home", "notes", "quizzes", "results", "progress", "settings"];
+function getStoredNav() {
+  try {
+    const v = localStorage.getItem(NAV_STORAGE_KEY);
+    return NAV_KEYS.includes(v) ? v : "home";
+  } catch {
+    return "home";
+  }
+}
 
 function getSession() {
   try {
@@ -61,12 +104,41 @@ function getSession() {
   }
 }
 
+// FIX: a 401 used to just delete the token from localStorage and throw,
+// without ever taking the student back to the sign-in screen. The page kept
+// rendering with stale/empty data and every subsequent call failed the same
+// way, silently. A 401 here only ever means the SERVER rejected the token
+// (network failures throw before this point, so this never fires for a
+// dropped wifi connection or a sleeping laptop) — so it's safe to treat it as
+// a real, final sign-out. `registerSessionExpiredHandler` lets the component
+// wire this to its actual handleSignOut (which clears storage and navigates).
+let sessionExpiredHandler = null;
+function registerSessionExpiredHandler(fn) {
+  sessionExpiredHandler = fn;
+}
+
+// FIX (sliding session): the server quietly re-signs the token on every
+// authenticated request and sends it back in X-Renewed-Token (see
+// requireMember in classroom.js). Swapping it into localStorage here means
+// an actively-used session never runs out from under the student — it only
+// ever ends when they explicitly sign out.
+function saveRenewedToken(response) {
+  try {
+    const renewed = response.headers.get("X-Renewed-Token");
+    if (!renewed) return;
+    const raw = localStorage.getItem(USER_SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ ...(typeof parsed === "object" && parsed ? parsed : {}), token: renewed }));
+  } catch { /* best-effort; never let this break a request */ }
+}
+
 async function apiFetch(path, options = {}) {
   const session = getSession();
   const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
   if (session?.token) headers.Authorization = `Bearer ${session.token}`;
 
   const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+  saveRenewedToken(response);
   let result;
   try {
     result = await response.json();
@@ -74,8 +146,9 @@ async function apiFetch(path, options = {}) {
     throw new Error("The server response was unreadable.");
   }
   if (response.status === 401) {
-    localStorage.removeItem(USER_SESSION_KEY);
-    throw new Error(result.message || "Session expired. Please sign in again.");
+    const message = result.message || "Your session expired. Please sign in again.";
+    if (sessionExpiredHandler) sessionExpiredHandler(message);
+    throw new Error(message);
   }
   if (!response.ok || !result.success) {
     throw new Error(result.message || "Something went wrong.");
@@ -112,8 +185,9 @@ const NAV_ITEMS = [
   { key: "settings", label: "Settings", icon: Settings },
 ];
 
+// FIX: "Easy ClassWork Record System" -> "ESMS" everywhere it's shown to the student.
 const T_EN = {
-  brand: "Easy ClassWork Record System",
+  brand: "ESMS",
   hello: "Hello",
   guest: "Student",
   guestRole: "STUDENT",
@@ -135,10 +209,17 @@ const T_EN = {
   noNotesSub: "Notes and updates will appear here once your teachers publish them.",
   signOut: "Sign Out",
   langSwitch: "Kinyarwanda",
+  chooseClassTitle: "Choose your class",
+  chooseClassSub: "Pick your class so you can see your teachers' notes and quizzes.",
+  chooseClassEmpty: "No classes have been set up for your school yet. Check back soon, or ask your school admin.",
+  chooseClassConfirm: "Confirm class",
+  chooseClassSaving: "Saving…",
+  currentClass: "Your class",
+  changeClass: "Change class",
 };
 
 const T_RW = {
-  brand: "Easy ClassWork Record System",
+  brand: "ESMS",
   hello: "Muraho",
   guest: "Umunyeshuri",
   guestRole: "UMUNYESHURI",
@@ -160,6 +241,13 @@ const T_RW = {
   noNotesSub: "Inyandiko zizagaragara hano abarimu bamaze kuzishyiraho.",
   signOut: "Sohoka",
   langSwitch: "English",
+  chooseClassTitle: "Hitamo ikiciro cyawe",
+  chooseClassSub: "Hitamo ikiciro kugira ngo ubone inyandiko n'ibizamini by'abarimu bawe.",
+  chooseClassEmpty: "Nta biciro biraboneka ku ishuri ryawe. Ongera ugerageze, cyangwa ubaze umuyobozi w'ishuri.",
+  chooseClassConfirm: "Emeza ikiciro",
+  chooseClassSaving: "Kubika…",
+  currentClass: "Ikiciro cyawe",
+  changeClass: "Hindura ikiciro",
 };
 
 /* ============================================================================
@@ -277,9 +365,78 @@ function InAppChatWidget() {
 }
 
 /* ============================================================================
+   CHOOSE-CLASS ONBOARDING
+   FIX: student.js already exposes GET /api/student/classes and
+   POST /api/student/class specifically so a student with no class yet can
+   pick one — but nothing in this dashboard ever called them. A student
+   approved without a class assigned (which is normal: the school admin can
+   leave it blank so the student picks later) ends up with class_id = null
+   forever, and /notes and /quizzes both reply 400 "Choose your class first."
+   every time, which silently became an empty list. This modal is the missing
+   piece: it blocks (only on first load, when there is truly no class yet)
+   until the student picks one, then hands off to the normal dashboard.
+   ============================================================================ */
+function ChooseClassModal({ classes, loading, saving, error, onPick, allowClose, onClose, t }) {
+  const [selected, setSelected] = useState(null);
+  return (
+    <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6" role="dialog" aria-modal="true">
+      <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl">
+        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-gray-100">
+          <span className="w-10 h-10 rounded-full flex items-center justify-center shrink-0" style={{ background: GREEN_SOFT }}>
+            <School size={18} color={GREEN} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-extrabold text-[15px]" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{t.chooseClassTitle}</h3>
+            <p className="text-[11px] text-gray-400">{t.chooseClassSub}</p>
+          </div>
+          {allowClose && (
+            <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+          )}
+        </div>
+        <div className="px-5 py-4">
+          {error && <p className="text-[11.5px] font-semibold text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 mb-3">{error}</p>}
+          {loading ? (
+            <p className="text-xs text-gray-400 py-6 text-center">Loading classes…</p>
+          ) : classes.length === 0 ? (
+            <p className="text-xs text-gray-400 py-4 text-center">{t.chooseClassEmpty}</p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto flex flex-col gap-1.5">
+              {classes.map((c) => {
+                const active = selected === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setSelected(c.id)}
+                    className="flex items-center justify-between text-left rounded-lg border px-3.5 py-2.5 text-xs transition-colors"
+                    style={{ borderColor: active ? GREEN : "#E5E7EB", background: active ? GREEN_SOFT : "white", color: active ? GREEN : "#374151" }}
+                  >
+                    <span className="font-semibold">{c.name}</span>
+                    {active && <Check size={14} />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <button
+            type="button"
+            disabled={!selected || saving || classes.length === 0}
+            onClick={() => onPick(selected)}
+            className="w-full mt-4 py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: GREEN }}
+          >
+            {saving ? t.chooseClassSaving : t.chooseClassConfirm}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
    SIDEBAR & UI COMPONENTS
    ============================================================================ */
-function Sidebar({ open, onClose, active, setActive, t, studentName, onSignOut }) {
+function Sidebar({ open, onClose, active, setActive, t, studentName, studentImage, onSignOut }) {
   return (
     <>
       {open && <div className="fixed inset-0 bg-black/30 z-30 lg:hidden" onClick={onClose} />}
@@ -299,9 +456,13 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, onSignOut }
         </div>
 
         <div className="border border-gray-100 rounded-lg flex items-center gap-3 p-4 mb-6">
-          <div className="rounded-full text-white flex items-center justify-center font-bold shrink-0 w-10 h-10 text-base" style={{ background: BLUE }}>
-            {studentName ? studentName.charAt(0).toUpperCase() : "S"}
-          </div>
+          {studentImage ? (
+            <img src={studentImage} alt={`${studentName || t.guest}'s profile`} referrerPolicy="no-referrer" className="rounded-full object-cover shrink-0 w-10 h-10" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+          ) : (
+            <div className="rounded-full text-white flex items-center justify-center font-bold shrink-0 w-10 h-10 text-base" style={{ background: BLUE }}>
+              {studentName ? studentName.charAt(0).toUpperCase() : "S"}
+            </div>
+          )}
           <div className="min-w-0">
             <p className="font-semibold text-gray-900 truncate text-[13px]">{studentName || t.guest}</p>
             <p className="font-medium tracking-wide text-[11px]" style={{ color: GREEN }}>{t.guestRole}</p>
@@ -363,6 +524,23 @@ function EmptyState({ icon: Icon, title, sub, tint, ink }) {
       <p className="font-bold text-gray-900 mb-1 text-[13px]">{title}</p>
       <p className="text-gray-400 text-xs max-w-[220px]">{sub}</p>
     </div>
+  );
+}
+
+// FIX (requested pagination): notes/quizzes/results can pile up. Show
+// SHOW_MORE_STEP items and reveal more on demand, same "Show more" pattern
+// used across the teacher dashboard.
+function ShowMoreButton({ remaining, onClick }) {
+  if (remaining <= 0) return null;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full mt-1 py-2.5 rounded-lg border text-xs font-bold hover:bg-gray-50 transition-colors"
+      style={{ borderColor: BLUE, color: BLUE }}
+    >
+      Show more ({remaining} more)
+    </button>
   );
 }
 
@@ -469,11 +647,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
-  const [penaltyMarks, setPenaltyMarks] = useState(0);
   const now = useNow(1000);
-
-  const hiddenSinceRef = useRef(null);
-  const attemptRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -483,8 +657,6 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
         if (cancelled) return;
         setQuiz(res.quiz);
         setAttempt(res.attempt);
-        attemptRef.current = res.attempt;
-        setPenaltyMarks(res.attempt.penaltyMarks || 0);
         const initialAnswers = {};
         for (const a of res.answers) initialAnswers[a.questionId] = a.optionId;
         setAnswers(initialAnswers);
@@ -521,6 +693,46 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
     }
   }, [remainingMs, loading, result, submit]);
 
+  // FIX (new): the server has always supported /penalty and /returned (a
+  // mark a second for time spent away from the tab, and telling the teacher
+  // live when the student comes back), but nothing on this side ever called
+  // them — leaving a quiz tab had no consequence and the teacher never saw
+  // it happen. While the tab is hidden this pings /penalty once a second
+  // (matching what the teacher's live activity feed expects); coming back
+  // pings /returned once. Both are best-effort and never interrupt the quiz.
+  useEffect(() => {
+    if (loading || result) return undefined;
+    let hiddenSince = null;
+    let tickId = null;
+
+    const reportAway = async () => {
+      try {
+        const res = await apiFetch(`/api/student/quizzes/${quizId}/penalty`, { method: "POST", body: JSON.stringify({ seconds: 1 }) });
+        if (res && typeof res.penaltyMarks === "number") {
+          setAttempt((a) => (a ? { ...a, penaltyMarks: res.penaltyMarks } : a));
+        }
+      } catch { /* best-effort; keep the quiz going either way */ }
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (hiddenSince) return; // already ticking
+        hiddenSince = Date.now();
+        tickId = window.setInterval(reportAway, 1000);
+      } else if (hiddenSince) {
+        hiddenSince = null;
+        if (tickId) { window.clearInterval(tickId); tickId = null; }
+        apiFetch(`/api/student/quizzes/${quizId}/returned`, { method: "POST" }).catch(() => {});
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      if (tickId) window.clearInterval(tickId);
+    };
+  }, [quizId, loading, result]);
+
   async function pick(questionId, optionId) {
     setAnswers((a) => ({ ...a, [questionId]: optionId }));
     try {
@@ -544,6 +756,51 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
     );
   }
   if (!quiz) return null;
+
+  // FIX: clicking "Submit quiz" with unanswered questions set
+  // confirmingSubmit to true, but nothing was ever rendered for it — no
+  // dialog existed, so the click appeared to do absolutely nothing and the
+  // student had no way to actually submit unless every question happened to
+  // be answered. This dialog is that missing piece: confirm and submit for
+  // real, or go back and finish answering.
+  if (confirmingSubmit) {
+    const skippedCount = quiz.questions.filter((q) => !answers[q.id]).length;
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-4 py-6" role="dialog" aria-modal="true">
+        <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
+          <span className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: RED_SOFT }}>
+            <FileEdit size={22} color={RED} />
+          </span>
+          <h3 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>
+            {skippedCount} question{skippedCount === 1 ? "" : "s"} unanswered
+          </h3>
+          <p className="text-xs text-gray-500 mb-5">
+            You can still submit as-is, or go back and finish answering first.
+          </p>
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={submit}
+              className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50"
+              style={{ background: GREEN }}
+            >
+              {submitting ? "Submitting…" : "Submit anyway"}
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => setConfirmingSubmit(false)}
+              className="w-full py-2.5 font-bold text-xs rounded-lg border disabled:opacity-50"
+              style={{ borderColor: BLUE, color: BLUE }}
+            >
+              Go back
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (result) {
     return (
@@ -584,10 +841,18 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
               <Timer size={13} /> {fmtCountdown(remainingMs)}
             </span>
           )}
+          {attempt?.penaltyMarks > 0 && (
+            <span className="text-[10px] font-bold shrink-0" style={{ color: RED }} title="Marks lost for time spent away from this tab">
+              −{attempt.penaltyMarks} for leaving the tab
+            </span>
+          )}
         </div>
 
         <div className="px-5 py-5 overflow-y-auto flex-1">
-          <p className="font-semibold text-[14px] text-gray-900 mb-4">Q{currentIndex + 1}. {question.question}</p>
+          <p className="font-semibold text-[14px] text-gray-900 mb-4">
+            Q{currentIndex + 1}. {question.question}{" "}
+            <span className="font-normal text-gray-400 text-[11px]">({question.marks ?? 1} mark{(question.marks ?? 1) === 1 ? "" : "s"})</span>
+          </p>
           <div className="flex flex-col gap-2">
             {question.options.map((o) => {
               const selected = answers[question.id] === o.id;
@@ -645,35 +910,171 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
 }
 
 /* ============================================================================
+   QUIZ REVIEW MODAL (read-only, for a quiz that is already submitted)
+   FIX: the "Review" button on a completed quiz used to reuse
+   QuizTakerModal, which calls POST /quizzes/:id/start -- and the server
+   correctly rejects that with 409 "You have already submitted this quiz"
+   once an attempt is submitted. So review silently failed every time. The
+   backend has always had a purpose-built, read-only endpoint for exactly
+   this (GET /api/student/quizzes/:id/review -- see student.js), it just was
+   never called from here. This modal calls it and shows, per question,
+   which option the student picked and which one was actually correct.
+   ============================================================================ */
+function QuizReviewModal({ quizId, onClose, toast }) {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(`/api/student/quizzes/${quizId}/review`);
+        if (!cancelled) setData(res);
+      } catch (err) {
+        toast(err.message, "error");
+        onClose();
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [quizId, toast, onClose]);
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50">
+        <div className="bg-white rounded-2xl px-8 py-6 text-sm font-semibold text-gray-600">Loading review…</div>
+      </div>
+    );
+  }
+  if (!data) return null;
+
+  const { quiz, result, questions } = data;
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-3 py-4" role="dialog" aria-modal="true">
+      <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+        <div className="flex items-center gap-3 px-5 pt-5 pb-3 border-b border-gray-100">
+          <span className="w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: BLUE_SOFT }}>
+            <Award size={16} color={BLUE} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <h3 className="font-extrabold text-[15px] truncate" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{quiz.title}</h3>
+            <p className="text-[11px] text-gray-400">
+              {result.finalScore}/{result.total} marks ({result.scorePercent}%)
+              {result.penaltyMarks > 0 ? ` · ${result.penaltyMarks} mark${result.penaltyMarks === 1 ? "" : "s"} deducted for leaving the tab` : ""}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+        </div>
+
+        <div className="px-5 py-5 overflow-y-auto flex-1 flex flex-col gap-4">
+          {questions.map((q, i) => {
+            const correctOption = q.options.find((o) => o.isCorrect);
+            const gotItRight = q.selectedOptionId && correctOption && q.selectedOptionId === correctOption.id;
+            return (
+              <div key={q.id} className="rounded-lg border p-3.5" style={{ borderColor: gotItRight ? GREEN : (q.selectedOptionId ? RED : "#E5E7EB") }}>
+                <p className="font-semibold text-[13px] text-gray-900 mb-2">
+                  Q{i + 1}. {q.question} <span className="font-normal text-gray-400 text-[11px]">({q.marks ?? 1} mark{(q.marks ?? 1) === 1 ? "" : "s"})</span>
+                </p>
+                <div className="flex flex-col gap-1.5">
+                  {q.options.map((o) => {
+                    const isSelected = q.selectedOptionId === o.id;
+                    const isCorrect = o.isCorrect;
+                    let style = { borderColor: "#E5E7EB", background: "white", color: "#374151" };
+                    if (isCorrect) style = { borderColor: GREEN, background: GREEN_SOFT, color: GREEN };
+                    else if (isSelected) style = { borderColor: RED, background: RED_SOFT, color: RED };
+                    return (
+                      <div key={o.id} className="flex items-center gap-2.5 rounded-lg border px-3 py-2 text-xs" style={style}>
+                        <span className="font-medium flex-1">{o.optionText}</span>
+                        {isCorrect && <CheckCircle2 size={14} />}
+                        {isSelected && !isCorrect && <X size={14} />}
+                      </div>
+                    );
+                  })}
+                </div>
+                {!q.selectedOptionId && <p className="text-[11px] mt-2 font-semibold" style={{ color: ORANGE }}>You did not answer this question.</p>}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="px-5 py-4 border-t border-gray-100">
+          <button type="button" onClick={onClose} className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity" style={{ background: BLUE }}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================================
    MAIN COMPONENT
    ============================================================================ */
 export default function Student({ onSignOut }) {
   const { toasts, push: toast } = useToasts();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [active, setActive] = useState("home");
+  const [active, setActive] = useState(getStoredNav);
   const [lang, setLang] = useState("en");
   const t = lang === "rw" ? T_RW : T_EN;
 
   const [loading, setLoading] = useState(true);
   const [studentName, setStudentName] = useState("");
+  const [studentImage, setStudentImage] = useState("");
   const [notes, setNotes] = useState([]);
   const [quizzes, setQuizzes] = useState([]);
   const [live, setLive] = useState(false);
 
+  // FIX (requested pagination): notes / all-quizzes / completed-quizzes each
+  // start collapsed to SHOW_MORE_STEP items with a "Show more" button, reset
+  // whenever the underlying list changes size so a student never lands on an
+  // empty trailing page.
+  const [notesVisible, setNotesVisible] = useState(SHOW_MORE_STEP);
+  const [quizzesVisible, setQuizzesVisible] = useState(SHOW_MORE_STEP);
+  const [resultsVisible, setResultsVisible] = useState(SHOW_MORE_STEP);
+  useEffect(() => { setNotesVisible(SHOW_MORE_STEP); }, [notes.length]);
+  useEffect(() => { setQuizzesVisible(SHOW_MORE_STEP); }, [quizzes.length]);
+
+  // FIX: the missing "pick your class" step. classId === undefined means "we
+  // don't know yet" (still booting); null means "we asked and there is
+  // genuinely none yet" -> show the picker. A real id means everything below
+  // can load normally.
+  const [classId, setClassId] = useState(undefined);
+  const [className, setClassName] = useState("");
+  const [availableClasses, setAvailableClasses] = useState([]);
+  const [classesLoading, setClassesLoading] = useState(false);
+  const [classSaving, setClassSaving] = useState(false);
+  const [classError, setClassError] = useState("");
+  const [showClassPicker, setShowClassPicker] = useState(false);
+
   const [openNote, setOpenNote] = useState(null);
   const [takingQuizId, setTakingQuizId] = useState(null);
+  // FIX: separate from takingQuizId -- opening a completed quiz for review
+  // must never call the "start a quiz" flow (see QuizReviewModal above).
+  const [reviewingQuizId, setReviewingQuizId] = useState(null);
 
   const handleSignOut = useCallback(() => {
     localStorage.removeItem(USER_SESSION_KEY);
+    localStorage.removeItem(NAV_STORAGE_KEY);
     if (onSignOut) onSignOut();
     else window.location.href = "/";
   }, [onSignOut]);
   const signOutRef = useRef(handleSignOut);
   signOutRef.current = handleSignOut;
 
-  // Split out of loadAll so a realtime "note published" / "quiz published"
-  // event can refresh just that one list, without also refetching /me or
-  // interrupting whatever the student happens to be doing (e.g. mid-quiz).
+  // Wire apiFetch's 401 handling to the REAL sign-out (clears storage AND
+  // navigates), instead of the old silent localStorage.removeItem that left
+  // the student stuck on a broken page. This only ever fires when the
+  // server itself rejects the token — never for a dropped connection.
+  useEffect(() => {
+    registerSessionExpiredHandler((message) => {
+      toast(message, "error");
+      signOutRef.current();
+    });
+    return () => registerSessionExpiredHandler(null);
+  }, [toast]);
+
   const refreshNotes = useCallback(async () => {
     try {
       const n = await apiFetch("/api/student/notes");
@@ -692,19 +1093,81 @@ export default function Student({ onSignOut }) {
     }
   }, [toast]);
 
+  const loadClassOptions = useCallback(async () => {
+    setClassesLoading(true);
+    setClassError("");
+    try {
+      const res = await apiFetch("/api/student/classes");
+      setAvailableClasses(res.classes || []);
+    } catch (err) {
+      setClassError(err.message);
+    } finally {
+      setClassesLoading(false);
+    }
+  }, []);
+
+  const pickClass = useCallback(async (id) => {
+    setClassSaving(true);
+    setClassError("");
+    try {
+      const res = await apiFetch("/api/student/class", { method: "POST", body: JSON.stringify({ classId: id }) });
+      setClassId(res.student.classId);
+      setClassName(res.student.className || "");
+      setShowClassPicker(false);
+      toast("Class set. Loading your notes and quizzes…");
+      await Promise.all([refreshNotes(), refreshQuizzes()]);
+    } catch (err) {
+      setClassError(err.message);
+    } finally {
+      setClassSaving(false);
+    }
+  }, [refreshNotes, refreshQuizzes, toast]);
+
+  const openClassPicker = useCallback(() => {
+    setShowClassPicker(true);
+    loadClassOptions();
+  }, [loadClassOptions]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
+    // Use profile details saved by Google sign-in immediately, then prefer
+    // the student record returned by the authenticated API.
+    const session = getSession();
+    const profile = session?.user || session?.student || session;
+    const sessionName = profile?.full_name || profile?.fullName || profile?.name || profile?.displayName || "";
+    const sessionImage = profile?.picture || profile?.photoURL || profile?.photoUrl || profile?.image || profile?.avatar || "";
+    if (sessionName) setStudentName(sessionName);
+    if (sessionImage) setStudentImage(sessionImage);
+
     try {
       const me = await apiFetch("/api/student/me");
-      setStudentName(me.student?.full_name || me.student?.fullName || "");
+      const student = me.student || {};
+      setStudentName(student.full_name || student.fullName || student.name || sessionName);
+      setStudentImage(student.profile_image || student.profileImage || student.photoURL || student.photoUrl || student.image || student.avatar || sessionImage);
+
+      const currentClassId = student.classId ?? null;
+      setClassId(currentClassId);
+      setClassName(student.className || "");
+
+      if (currentClassId) {
+        await Promise.all([refreshNotes(), refreshQuizzes()]);
+      } else {
+        // FIX: this is the missing piece — no class yet, so show the picker
+        // instead of silently loading empty notes/quizzes forever.
+        setShowClassPicker(true);
+        loadClassOptions();
+      }
     } catch (err) {
       toast(err.message, "error");
     }
-    await Promise.all([refreshNotes(), refreshQuizzes()]);
     setLoading(false);
-  }, [toast, refreshNotes, refreshQuizzes]);
+  }, [toast, refreshNotes, refreshQuizzes, loadClassOptions]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  useEffect(() => {
+    try { localStorage.setItem(NAV_STORAGE_KEY, active); } catch { /* ignore */ }
+  }, [active]);
 
   // ---------------------------------------------------------------------
   // Realtime connection to the classroom namespace.
@@ -717,13 +1180,25 @@ export default function Student({ onSignOut }) {
   //   1. The student pressing "Sign Out".
   //   2. The server explicitly telling us the token itself is invalid or
   //      expired (a REST 401, or a socket "unauthorized" connect_error).
+  //
+  // FIX: this connection previously could authenticate with a STALE or
+  // WRONG token whenever a teacher session on the same browser had just
+  // overwritten the shared "ecw_user_session" key (see the USER_SESSION_KEY
+  // note near the top of this file). Reading from the student-only key now
+  // means this socket -- and note:changed/quiz:changed live updates -- keep
+  // working reliably even with a teacher dashboard open in another tab.
   // ---------------------------------------------------------------------
   useEffect(() => {
     const session = getSession();
     if (!session?.token) return undefined;
 
+    // FIX: `auth` used to be a plain object captured once when this effect
+    // ran. If the token was renewed later (see the sliding session in
+    // apiFetch above) or Socket.IO had to reconnect, it kept retrying with
+    // that same stale captured value instead of whatever is actually in
+    // localStorage now. A function is called fresh on every (re)connect.
     const socket = io(`${API_BASE}${CLASSROOM_SOCKET_NAMESPACE}`, {
-      auth: { token: session.token },
+      auth: (cb) => cb({ token: getSession()?.token }),
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 8000,
@@ -733,8 +1208,11 @@ export default function Student({ onSignOut }) {
     socket.on("disconnect", () => setLive(false)); // temporary — not a sign-out
     socket.on("connect_error", (err) => {
       setLive(false);
+      // Only a genuine "unauthorized" (bad/expired token, deactivated
+      // account — see classroom.js) is a real sign-out. Anything else (e.g.
+      // "server_error", a network blip) is temporary: Socket.IO keeps
+      // retrying quietly on its own and the student stays signed in.
       if (err?.message === "unauthorized") {
-        localStorage.removeItem(USER_SESSION_KEY);
         toast("Your session expired. Please sign in again.", "error");
         signOutRef.current();
       }
@@ -762,8 +1240,30 @@ export default function Student({ onSignOut }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toast, refreshNotes, refreshQuizzes]);
 
+  // Keep teacher content synchronized even when Socket.IO is unavailable.
+  // Refresh immediately when the student returns to this tab, then poll while
+  // the page is visible; realtime events remain the fast path when connected.
+  // Skipped entirely until a class is actually chosen (no point polling an
+  // endpoint that will just 400 every time).
+  useEffect(() => {
+    if (!classId) return undefined;
+    const syncContent = () => {
+      if (document.visibilityState === "visible") {
+        refreshNotes();
+        refreshQuizzes();
+      }
+    };
+    const intervalId = window.setInterval(syncContent, 30000);
+    document.addEventListener("visibilitychange", syncContent);
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", syncContent);
+    };
+  }, [classId, refreshNotes, refreshQuizzes]);
+
   const pendingQuizzes = quizzes.filter((q) => q.status === "available" || q.status === "in_progress" || q.status === "upcoming");
   const doneQuizzes = quizzes.filter((q) => q.status === "completed");
+  useEffect(() => { setResultsVisible(SHOW_MORE_STEP); }, [doneQuizzes.length]);
   const averageScore = doneQuizzes.length
     ? Math.round(doneQuizzes.reduce((sum, q) => sum + (q.attempt?.scorePercent || 0), 0) / doneQuizzes.length) + "%"
     : "—";
@@ -777,6 +1277,18 @@ export default function Student({ onSignOut }) {
 
   return (
     <div className="min-h-screen bg-white flex text-gray-900">
+      {showClassPicker && (
+        <ChooseClassModal
+          classes={availableClasses}
+          loading={classesLoading}
+          saving={classSaving}
+          error={classError}
+          onPick={pickClass}
+          allowClose={!!classId}
+          onClose={() => setShowClassPicker(false)}
+          t={t}
+        />
+      )}
       {openNote && <NoteViewerModal note={openNote} onClose={() => setOpenNote(null)} />}
       {takingQuizId && (
         <QuizTakerModal
@@ -784,6 +1296,13 @@ export default function Student({ onSignOut }) {
           toast={toast}
           onClose={() => { setTakingQuizId(null); refreshQuizzes(); }}
           onFinished={() => { refreshQuizzes(); }}
+        />
+      )}
+      {reviewingQuizId && (
+        <QuizReviewModal
+          quizId={reviewingQuizId}
+          toast={toast}
+          onClose={() => setReviewingQuizId(null)}
         />
       )}
 
@@ -794,6 +1313,7 @@ export default function Student({ onSignOut }) {
         setActive={setActive}
         t={t}
         studentName={studentName}
+        studentImage={studentImage}
         onSignOut={handleSignOut}
       />
 
@@ -841,12 +1361,18 @@ export default function Student({ onSignOut }) {
                     <span className="font-bold text-white">{pendingQuizzes.length}</span> {t.welcomeSub3}
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    <span className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5"><Backpack className="w-3 h-3" /> My Class</span>
+                    <button type="button" onClick={openClassPicker} className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5 hover:bg-white/10 transition-colors">
+                      <Backpack className="w-3 h-3" /> {className || t.currentClass}
+                    </button>
                     <span className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5"><Gift className="w-3 h-3" /> Academic Year</span>
                   </div>
                 </div>
-                <div className="relative flex shrink-0 items-center justify-center bg-white/10 border border-white/20 rounded-full w-10 h-10 sm:w-12 sm:h-12 ml-4">
-                  <User className="w-[55%] h-[55%] text-white" aria-hidden="true" />
+                <div className="relative flex shrink-0 items-center justify-center bg-white/10 border border-white/20 rounded-full w-10 h-10 sm:w-12 sm:h-12 ml-4 overflow-hidden">
+                  {studentImage ? (
+                    <img src={studentImage} alt={`${studentName || t.guest}'s profile`} referrerPolicy="no-referrer" className="w-full h-full object-cover" onError={() => setStudentImage("")} />
+                  ) : (
+                    <span className="font-bold text-white text-lg" aria-label={studentName || t.guest}>{studentName ? studentName.charAt(0).toUpperCase() : <User className="w-[55%] h-[55%]" aria-hidden="true" />}</span>
+                  )}
                   <span className="absolute bottom-0 right-0 w-3 h-3 sm:w-3.5 sm:h-3.5 rounded-full border-2" style={{ background: GREEN, borderColor: BLUE }} />
                 </div>
               </div>
@@ -902,7 +1428,7 @@ export default function Student({ onSignOut }) {
                   ) : (
                     <div className="flex flex-col gap-2.5">
                       {pendingQuizzes.map((quiz) => (
-                        <QuizRow key={quiz.id} quiz={quiz} onStart={(q) => setTakingQuizId(q.id)} onViewResult={(q) => setTakingQuizId(q.id)} />
+                        <QuizRow key={quiz.id} quiz={quiz} onStart={(q) => setTakingQuizId(q.id)} onViewResult={(q) => setReviewingQuizId(q.id)} />
                       ))}
                     </div>
                   )}
@@ -918,18 +1444,21 @@ export default function Student({ onSignOut }) {
               {notes.length === 0 ? (
                 <EmptyState icon={BookOpen} title="No Study Notes" sub="When teachers publish notes, they will appear right here." tint={BLUE_SOFT} ink={BLUE} />
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {notes.map((note) => (
-                    <div key={note.id} onClick={() => setOpenNote(note)} className="bg-gray-50 border border-gray-100 hover:border-gray-300 transition-colors p-4 rounded-xl cursor-pointer">
-                      <div className="flex items-center gap-2 mb-2">
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: GREEN_SOFT, color: GREEN }}>{note.subject || "General"}</span>
-                        <span className="text-[10px] text-gray-400">{fmtDateTime(note.updatedAt)}</span>
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {notes.slice(0, notesVisible).map((note) => (
+                      <div key={note.id} onClick={() => setOpenNote(note)} className="bg-gray-50 border border-gray-100 hover:border-gray-300 transition-colors p-4 rounded-xl cursor-pointer">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: GREEN_SOFT, color: GREEN }}>{note.subject || "General"}</span>
+                          <span className="text-[10px] text-gray-400">{fmtDateTime(note.updatedAt)}</span>
+                        </div>
+                        <h3 className="font-bold text-sm text-gray-900 mb-1">{note.title}</h3>
+                        <p className="text-xs text-gray-500 line-clamp-2">{note.content}</p>
                       </div>
-                      <h3 className="font-bold text-sm text-gray-900 mb-1">{note.title}</h3>
-                      <p className="text-xs text-gray-500 line-clamp-2">{note.content}</p>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                  <ShowMoreButton remaining={notes.length - notesVisible} onClick={() => setNotesVisible((n) => n + SHOW_MORE_STEP)} />
+                </>
               )}
             </div>
           )}
@@ -941,11 +1470,14 @@ export default function Student({ onSignOut }) {
               {quizzes.length === 0 ? (
                 <EmptyState icon={Lightbulb} title="No Active Quizzes" sub="Check back later for new class assignments." tint={ORANGE_SOFT} ink={ORANGE} />
               ) : (
-                <div className="flex flex-col gap-3">
-                  {quizzes.map((quiz) => (
-                    <QuizRow key={quiz.id} quiz={quiz} onStart={(q) => setTakingQuizId(q.id)} onViewResult={(q) => setTakingQuizId(q.id)} />
-                  ))}
-                </div>
+                <>
+                  <div className="flex flex-col gap-3">
+                    {quizzes.slice(0, quizzesVisible).map((quiz) => (
+                      <QuizRow key={quiz.id} quiz={quiz} onStart={(q) => setTakingQuizId(q.id)} onViewResult={(q) => setReviewingQuizId(q.id)} />
+                    ))}
+                  </div>
+                  <ShowMoreButton remaining={quizzes.length - quizzesVisible} onClick={() => setQuizzesVisible((n) => n + SHOW_MORE_STEP)} />
+                </>
               )}
             </div>
           )}
@@ -957,20 +1489,28 @@ export default function Student({ onSignOut }) {
               {doneQuizzes.length === 0 ? (
                 <EmptyState icon={FileText} title="No Results Yet" sub="Your scores will be listed here after submitting your quizzes." tint={BLUE_SOFT} ink={BLUE} />
               ) : (
-                <div className="flex flex-col gap-3">
-                  {doneQuizzes.map((q) => (
-                    <div key={q.id} className="flex items-center justify-between border border-gray-100 rounded-lg p-3.5 bg-gray-50">
-                      <div>
-                        <h4 className="font-bold text-sm text-gray-900">{q.title}</h4>
-                        <p className="text-xs text-gray-400">{q.subject || "General"} · {fmtDateTime(q.attempt?.completedAt)}</p>
+                <>
+                  <div className="flex flex-col gap-3">
+                    {doneQuizzes.slice(0, resultsVisible).map((q) => (
+                      <div key={q.id} className="flex items-center justify-between border border-gray-100 rounded-lg p-3.5 bg-gray-50 gap-3">
+                        <div className="min-w-0">
+                          <h4 className="font-bold text-sm text-gray-900 truncate">{q.title}</h4>
+                          <p className="text-xs text-gray-400">{q.subject || "General"} · {fmtDateTime(q.attempt?.completedAt)}</p>
+                        </div>
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="text-right">
+                            <span className="font-extrabold text-sm" style={{ color: GREEN }}>{q.attempt?.scorePercent}%</span>
+                            <p className="text-[11px] text-gray-500">{q.attempt?.finalScore} / {q.questionCount}</p>
+                          </div>
+                          <button type="button" onClick={() => setReviewingQuizId(q.id)} className="rounded-lg font-bold text-[11px] px-3 py-2 border" style={{ borderColor: BLUE, color: BLUE }}>
+                            Review
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <span className="font-extrabold text-sm" style={{ color: GREEN }}>{q.attempt?.scorePercent}%</span>
-                        <p className="text-[11px] text-gray-500">{q.attempt?.finalScore} / {q.questionCount}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                  <ShowMoreButton remaining={doneQuizzes.length - resultsVisible} onClick={() => setResultsVisible((n) => n + SHOW_MORE_STEP)} />
+                </>
               )}
             </div>
           )}
@@ -996,6 +1536,20 @@ export default function Student({ onSignOut }) {
             <div className="bg-white rounded-lg border border-gray-100 p-5">
               <h2 className="font-extrabold text-base mb-1" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>Account Settings</h2>
               <p className="text-xs text-gray-400 mb-5">Manage your user profile and language preferences.</p>
+              <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                <div>
+                  <p className="font-bold text-xs text-gray-900">{t.currentClass}</p>
+                  <p className="text-[11px] text-gray-400">{className || "No class chosen yet"}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={openClassPicker}
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-bold"
+                  style={{ color: BLUE }}
+                >
+                  {t.changeClass}
+                </button>
+              </div>
               <div className="flex items-center justify-between py-3 border-b border-gray-100">
                 <div>
                   <p className="font-bold text-xs text-gray-900">Language</p>

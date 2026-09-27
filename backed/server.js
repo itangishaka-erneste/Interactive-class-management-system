@@ -36,7 +36,18 @@ const corsOrigin = allowedOrigins.length ? allowedOrigins : true;
 
 // PATCH must be listed: the school admin dashboard uses PATCH for status/class
 // changes, and it is not one of the default simple methods for CORS preflight.
-app.use(cors({ origin: corsOrigin, methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] }));
+// exposedHeaders: browsers hide all response headers from cross-origin fetch()
+// calls unless the server explicitly whitelists them. X-Renewed-Token carries
+// the sliding-session refresh (see classroom.js requireMember) -- without this
+// line it would work when frontend and backend share an origin locally, then
+// silently stop working the moment the frontend is deployed separately (e.g.
+// Vercel) from the backend (e.g. Render), and sessions would quietly go back
+// to expiring on the clock instead of staying alive while the user is active.
+app.use(cors({
+  origin: corsOrigin,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  exposedHeaders: ["X-Renewed-Token"],
+}));
 
 // The register form sends the logo as a base64 string. The default 100kb limit
 // rejects most logos, so registration failed with "PayloadTooLargeError".

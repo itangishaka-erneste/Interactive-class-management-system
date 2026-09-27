@@ -101,6 +101,11 @@ CREATE TABLE IF NOT EXISTS ecw_quiz_questions (
   position INTEGER NOT NULL DEFAULT 0,
   question TEXT NOT NULL
 );
+-- FIX (new feature): every question used to be worth exactly 1 mark, with no
+-- way for a teacher (or the AI) to weight harder questions more heavily.
+-- ADD COLUMN IF NOT EXISTS is safe to run every startup, including against a
+-- database that already had this table before this column existed.
+ALTER TABLE ecw_quiz_questions ADD COLUMN IF NOT EXISTS marks INTEGER NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS ecw_quiz_options (
   id SERIAL PRIMARY KEY,
@@ -130,6 +135,17 @@ CREATE TABLE IF NOT EXISTS ecw_quiz_answers (
   question_id INTEGER NOT NULL REFERENCES ecw_quiz_questions(id) ON DELETE CASCADE,
   option_id INTEGER NOT NULL REFERENCES ecw_quiz_options(id) ON DELETE CASCADE,
   PRIMARY KEY (attempt_id, question_id)
+);
+
+-- Backs "give this one student another chance" (teacher.js's reopen route /
+-- student.js's /start check). Lives here, once, so teacher.js and student.js
+-- don't race each other creating the same table at startup.
+CREATE TABLE IF NOT EXISTS ecw_quiz_reopens (
+  quiz_id INTEGER NOT NULL REFERENCES ecw_quizzes(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES ecw_members(id) ON DELETE CASCADE,
+  deadline_at TIMESTAMPTZ NOT NULL,
+  granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (quiz_id, student_id)
 );
 `;
 
@@ -189,11 +205,20 @@ function getSecret() {
   return process.env.JWT_SECRET;
 }
 
+// A JWT expiry is still an automatic sign-out, which would contradict "the
+// session should only end when the person presses Sign Out" -- a person
+// mid-term would otherwise get silently bounced back to the sign-in screen.
+// 30 days as the ceiling, PLUS the sliding renewal below (which re-signs a
+// fresh 30-day token onto every authenticated request once the current one
+// is more than half spent) means an actively-used session effectively never
+// expires; only real inactivity for a month, or an explicit sign-out, ends it.
+const MEMBER_TOKEN_EXPIRY_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
 function signMemberToken(m) {
   return jwt.sign(
     { role: m.role, memberId: m.id, schoolId: m.school_id, email: m.email },
     getSecret(),
-    { expiresIn: "7d" }
+    { expiresIn: MEMBER_TOKEN_EXPIRY_SECONDS }
   );
 }
 
@@ -224,13 +249,32 @@ async function memberFromToken(token, role) {
   if (!m || m.role !== role) throw httpError(401, "This account no longer exists. Please sign in again.");
   if (m.status !== "active") throw httpError(403, inactiveMessage(m.status));
   if (m.school_status !== "active") throw httpError(403, "Your school is not active. Please contact your school admin.");
+  m._tokenExp = payload.exp; // seconds since epoch, used by the sliding-session renewal below
   return m;
+}
+
+// FIX (sliding session): both teacher.jsx and student.jsx already read a
+// response header called X-Renewed-Token and swap it into localStorage if
+// present, but nothing here ever sent one -- this is that missing half. Once
+// less than half of the 30-day lifetime is left on the current token, a
+// fresh 30-day token is issued on the response, so a person who keeps using
+// the app never actually reaches their token's expiry; only real inactivity
+// for a month, or an explicit sign-out, ends the session.
+function maybeRenewToken(res, m) {
+  try {
+    if (!m || !m._tokenExp) return;
+    const secondsLeft = m._tokenExp - Math.floor(Date.now() / 1000);
+    if (secondsLeft < MEMBER_TOKEN_EXPIRY_SECONDS / 2) {
+      res.set("X-Renewed-Token", signMemberToken(m));
+    }
+  } catch { /* renewal is best-effort; never break the real request over this */ }
 }
 
 function requireMember(role) {
   return async (req, res, next) => {
     try {
       req.member = await memberFromToken(readBearer(req), role);
+      maybeRenewToken(res, req.member);
       next();
     } catch (err) {
       sendError(res, err.status || 401, err.message);
@@ -390,6 +434,13 @@ function setupClassroomSocket(io) {
   const ns = io.of("/classroom");
   globalThis[NS_KEY] = ns;
 
+  // teacher.jsx and student.jsx pass `auth` as a callback (`(cb) =>
+  // cb({ token })`) rather than a plain object, specifically so Socket.IO
+  // fetches a FRESH token out of storage on every connection and
+  // reconnection attempt -- both a teacher and a student can now be signed
+  // in on the same browser at once (see the separate localStorage keys in
+  // each file), and a renewed sliding-session token must also be picked up
+  // on reconnect rather than reusing a stale captured value.
   ns.use(async (socket, next) => {
     try {
       const token = socket.handshake.auth && socket.handshake.auth.token;

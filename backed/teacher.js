@@ -18,6 +18,12 @@
    5. The AI rate-limit map is pruned so it cannot grow forever.
    6. AI calls now go through Google's Gemini API (free tier) instead of the
       Anthropic API, so the AI features work without a paid key.
+   7. NEW: /quizzes/:id/results now lists every student in the class, including
+      those who never started (previously only students with an attempt row
+      appeared at all, so a teacher could never even see who to help).
+   8. NEW: POST /quizzes/:id/students/:studentId/reopen lets a teacher give one
+      specific student another chance at a quiz whose window has closed, or
+      extend a student's own deadline if they're mid-attempt.
    ============================================================================ */
 
 const express = require("express");
@@ -34,6 +40,13 @@ router.post("/register", auth.register);
 router.post("/login", auth.login);
 
 router.use(cls.requireMember("teacher"));
+
+/* ------------------------------ database safety ------------------------------ */
+// ecw_quiz_reopens now lives in classroom.js's central schema (see the FIX
+// comment there) instead of being created here a second time -- this used
+// to race with student.js's identical copy of this block at every startup.
+// router.use(cls.requireReady) above already guarantees the table exists
+// before any route below can run.
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -319,7 +332,12 @@ async function loadQuizzes(where, params) {
   const questionsByQuiz = new Map();
   for (const row of qs.rows) {
     if (!questionsByQuiz.has(row.quiz_id)) questionsByQuiz.set(row.quiz_id, []);
-    questionsByQuiz.get(row.quiz_id).push({ id: row.id, question: row.question, options: optionsByQuestion.get(row.id) || [] });
+    // FIX: `SELECT *` already pulled `marks` out of the row, but it was
+    // being dropped right here instead of passed on to the teacher
+    // dashboard -- so a weight set in the editor was saved correctly (see
+    // writeQuestions) yet never showed up again on reload, and the quiz
+    // preview/results screens had no way to reflect it either.
+    questionsByQuiz.get(row.quiz_id).push({ id: row.id, question: row.question, marks: row.marks, options: optionsByQuestion.get(row.id) || [] });
   }
 
   return q.rows.map((r) => ({
@@ -347,6 +365,11 @@ async function getQuiz(id, teacherId) {
 }
 
 // Drops empty options and keeps at most one correct answer per question.
+// FIX: `marks` (how much this question is worth -- see the migration in
+// classroom.js) was added to the schema but never actually read from the
+// request body, so every question kept being written back with the column's
+// default of 1 no matter what the teacher set in the editor. Parse and clamp
+// it here like every other numeric field on this quiz.
 function normalizeQuestions(input) {
   if (input === undefined || input === null) return [];
   if (!Array.isArray(input)) throw httpError(400, "Questions must be a list.");
@@ -361,7 +384,10 @@ function normalizeQuestions(input) {
       if (o.isCorrect && seen) o.isCorrect = false;
       if (o.isCorrect) seen = true;
     }
-    return { question: clean(q && q.question, 1000), options };
+    let marks = Number.parseInt(q && q.marks, 10);
+    if (!Number.isInteger(marks) || marks < 1) marks = 1;
+    if (marks > 100) marks = 100;
+    return { question: clean(q && q.question, 1000), options, marks };
   });
 }
 
@@ -396,8 +422,8 @@ async function writeQuestions(client, quizId, questions) {
   await client.query("DELETE FROM ecw_quiz_questions WHERE quiz_id = $1", [quizId]);
   for (let i = 0; i < questions.length; i++) {
     const q = await client.query(
-      "INSERT INTO ecw_quiz_questions (quiz_id, position, question) VALUES ($1, $2, $3) RETURNING id",
-      [quizId, i, questions[i].question]
+      "INSERT INTO ecw_quiz_questions (quiz_id, position, question, marks) VALUES ($1, $2, $3, $4) RETURNING id",
+      [quizId, i, questions[i].question, questions[i].marks || 1]
     );
     for (let j = 0; j < questions[i].options.length; j++) {
       const o = questions[i].options[j];
@@ -531,6 +557,56 @@ router.delete(
   })
 );
 
+// FIX (new feature): lets a teacher give ONE student another chance at this
+// quiz -- either because they never started it and the window has closed
+// ("missed it"), or to extend their personal deadline if they're mid-attempt
+// and ran out of time. This never touches the schedule other students see.
+router.post(
+  "/quizzes/:id/students/:studentId/reopen",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "quiz");
+    const studentId = parseId(req.params.studentId, "student");
+    const quiz = await getQuiz(id, m.id); // throws 404/ownership check
+
+    const requestedMinutes = Number.parseInt(req.body && req.body.minutes, 10);
+    const minutes = Math.min(180, Math.max(1, requestedMinutes || quiz.timeLimitMinutes || 15));
+    const deadline = new Date(Date.now() + minutes * 60000).toISOString();
+
+    const existing = await pool.query(
+      "SELECT * FROM ecw_quiz_attempts WHERE quiz_id = $1 AND student_id = $2",
+      [id, studentId]
+    );
+
+    if (existing.rowCount > 0) {
+      if (existing.rows[0].submitted_at) {
+        throw httpError(400, "This student has already submitted the quiz.");
+      }
+      // Already mid-attempt (or their attempt row exists but they ran out of
+      // time without submitting) -- just extend their own deadline.
+      await pool.query("UPDATE ecw_quiz_attempts SET deadline_at = $1 WHERE id = $2", [deadline, existing.rows[0].id]);
+    } else {
+      // Never started at all -- record a reopen grant; student.js's /start
+      // route checks this table once the class-wide window has closed.
+      await pool.query(
+        `INSERT INTO ecw_quiz_reopens (quiz_id, student_id, deadline_at) VALUES ($1, $2, $3)
+         ON CONFLICT (quiz_id, student_id) DO UPDATE SET deadline_at = EXCLUDED.deadline_at, granted_at = NOW()`,
+        [id, studentId, deadline]
+      );
+    }
+
+    try {
+      emit(rooms.member(studentId), "quiz:reopened", { quizId: id, quizTitle: quiz.title, deadlineAt: deadline });
+    } catch { /* realtime is best-effort */ }
+
+    res.json({ success: true, deadlineAt: deadline });
+  })
+);
+
+// FIX: this used to only ever list students who had an ecw_quiz_attempts row,
+// so a teacher could never see -- let alone help -- a student who never
+// started the quiz at all. It now lists every student in the class with a
+// LEFT JOIN, so "never started" shows up as its own visible row.
 router.get(
   "/quizzes/:id/results",
   wrap(async (req, res) => {
@@ -540,9 +616,14 @@ router.get(
 
     const [attempts, size, stats] = await Promise.all([
       pool.query(
-        `SELECT a.*, s.full_name, s.email FROM ecw_quiz_attempts a JOIN ecw_members s ON s.id = a.student_id
-         WHERE a.quiz_id = $1 ORDER BY a.submitted_at DESC NULLS LAST, a.started_at DESC`,
-        [id]
+        `SELECT s.id AS student_id, s.full_name, s.email,
+                a.id AS attempt_id, a.started_at, a.submitted_at, a.deadline_at,
+                a.raw_score, a.penalty_marks, a.final_score, a.total, a.score_percent
+         FROM ecw_members s
+         LEFT JOIN ecw_quiz_attempts a ON a.quiz_id = $1 AND a.student_id = s.id
+         WHERE s.role = 'student' AND s.class_id = $2
+         ORDER BY (a.submitted_at IS NULL), a.submitted_at DESC NULLS LAST, s.full_name`,
+        [id, quiz.classId]
       ),
       pool.query("SELECT COUNT(*)::int AS n FROM ecw_members WHERE role = 'student' AND class_id = $1", [quiz.classId]),
       pool.query(
@@ -561,24 +642,33 @@ router.get(
 
     const done = attempts.rows.filter((a) => a.submitted_at);
     const average = done.length ? Math.round(done.reduce((s, a) => s + (a.score_percent || 0), 0) / done.length) : null;
+    const now = Date.now();
+
     res.json({
       success: true,
-      quiz: { id: quiz.id, title: quiz.title, className: quiz.className, subject: quiz.subject, questionCount: quiz.questions.length },
+      quiz: { id: quiz.id, title: quiz.title, className: quiz.className, subject: quiz.subject, questionCount: quiz.questions.length, endsAt: quiz.endsAt },
       classSize: size.rows[0].n,
       submitted: done.length,
       average,
-      results: attempts.rows.map((a) => ({
-        attemptId: a.id,
-        studentName: a.full_name,
-        email: a.email,
-        startedAt: a.started_at,
-        submittedAt: a.submitted_at,
-        rawScore: a.raw_score,
-        penaltyMarks: a.penalty_marks,
-        finalScore: a.final_score,
-        total: a.total,
-        scorePercent: a.score_percent,
-      })),
+      results: attempts.rows.map((a) => {
+        const missed = !a.submitted_at && (!a.attempt_id || (a.deadline_at && new Date(a.deadline_at).getTime() < now));
+        return {
+          studentId: a.student_id,
+          attemptId: a.attempt_id,
+          studentName: a.full_name,
+          email: a.email,
+          startedAt: a.started_at,
+          submittedAt: a.submitted_at,
+          deadlineAt: a.deadline_at,
+          rawScore: a.raw_score,
+          penaltyMarks: a.penalty_marks,
+          finalScore: a.final_score,
+          total: a.total,
+          scorePercent: a.score_percent,
+          neverStarted: !a.attempt_id,
+          missed,
+        };
+      }),
       questionStats: stats.rows.map((s) => ({
         id: s.id,
         question: s.question,

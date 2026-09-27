@@ -2,12 +2,13 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import dashboard from './assets/dashboard.png';
 import esms from './assets/esms.jpg';
-import ceo from './assets/logo.png';
 import trends from './assets/trends.jpg';
 import nesa from './assets/nesa.jpg';
 import reb from './assets/reb.jpg';
 import minedic from './assets/minedic.jpg';
 import asyv from './assets/asyv.webp';
+import ceo from './assets/ceo.jpg';
+import mukunzi from './assets/muk.png';
 import {
   BookOpen,
   ClipboardCheck,
@@ -1622,14 +1623,14 @@ export default function EasyClassWork() {
           </div>
           <div className="flex flex-wrap justify-center gap-6">
             {[
-              { name: "Erneste Itangishaka", role: "Founder and lead engineer", ring: "ring-emerald-100", tint: "#178754" },
-              { name: "Aline Umurerwa", role: "Product designer", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
-              { name: "Mukunzi Joseph", role: "Backend Developer", ring: "ring-emerald-100", tint: "#178754" },
-              { name: "Mutangana Justin", role: "Curriculum lead", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
+              { name: "Erneste Itangishaka", role: "Founder and lead engineer", image: ceo, ring: "ring-emerald-100", tint: "#178754" },
+              { name: "Aline Umurerwa", role: "Product designer", image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
+              { name: "Mukunzi Joseph", role: "Backend Developer", image: mukunzi, ring: "ring-emerald-100", tint: "#178754" },
+              { name: "Mutangana Justin", role: "Curriculum lead", image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
             ].map((m) => (
               <div key={m.name} className="flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-full sm:w-[45%] lg:w-[22%]">
                 <span className={`w-24 h-24 rounded-full bg-white flex items-center justify-center mx-auto mb-4 ring-4 ${m.ring} shadow-sm`}>
-                  <img src={ceo} alt={m.name} className="w-20 h-20 rounded-full" />
+                  <img src={m.image} alt={`${m.name} portrait`} className="w-full h-full rounded-full object-cover" />
                 </span>
                 <p className="ecw-heading font-bold text-sm text-neutral-900">{m.name}</p>
                 <p className="ecw-body text-xs mt-0.5" style={{ color: m.tint }}>{m.role}</p>
@@ -1669,14 +1670,14 @@ export default function EasyClassWork() {
           <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400 text-center mb-8">Our partners</p>
           <div className="flex flex-wrap gap-5">
             {[
-              { icon: Building2, bg: "#EAF6EF", tint: "#178754", name: "MINEDUC", sub: "Ministry of Education" },
-              { icon: Landmark, bg: "#E6F1FB", tint: "#1D6FE0", name: "REB", sub: "Basic Education Board" },
-              { icon: ScrollText, bg: "#EAF6EF", tint: "#178754", name: "NESA", sub: "National Examination" },
-              { icon: HeartHandshake, bg: "#E6F1FB", tint: "#1D6FE0", name: "ASYV", sub: "System supporter" },
-            ].map(({ icon: Icon, bg, tint, name, sub }) => (
+              { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
+              { image: reb, name: "REB", sub: "Basic Education Board" },
+              { image: nesa, name: "NESA", sub: "National Examination" },
+              { image: asyv, name: "ASYV", sub: "System supporter" },
+            ].map(({ image, name, sub }) => (
               <div key={name} className="flex items-center gap-3 bg-neutral-50 rounded-xl p-4 border border-neutral-100 flex-1 min-w-[220px]">
-                <span className="w-11 h-11 rounded-full flex items-center justify-center shrink-0" style={{ background: bg }}>
-                  <Icon className="w-5 h-5" style={{ color: tint }} aria-hidden="true" />
+                <span className="w-11 h-11 rounded-full bg-white flex items-center justify-center shrink-0 overflow-hidden">
+                  <img src={image} alt={`${name} logo`} className="w-full h-full object-contain" />
                 </span>
                 <div>
                   <p className="ecw-heading font-bold text-xs text-neutral-900">{name}</p>

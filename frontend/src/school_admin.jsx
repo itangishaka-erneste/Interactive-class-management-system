@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client'; // npm i socket.io-client
+import logo from './assets/esms.jpg';
 import {
   GraduationCap, Bell, Filter, Users, UserCog, LogOut, LayoutGrid,
   ClipboardCheck, Plus, Trash2, X, ChevronDown, Menu,
@@ -252,9 +253,44 @@ function StatMini({ icon: Icon, value, label, tone = 'green' }) {
 }
 function SearchBox({ value, onChange, placeholder }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: t.panel, border: `1px solid ${t.border}`, borderRadius: 8, padding: '5px 10px', minHeight: 34, boxSizing: 'border-box', flex: '1 1 200px', maxWidth: 320 }}>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        background: t.panel,
+        border: `1px solid ${t.border}`,
+        borderRadius: 8,
+        padding: '0 10px',
+        height: '40px',
+        minHeight: '40px',
+        maxHeight: '40px',
+        boxSizing: 'border-box',
+        flex: '1 1 200px',
+        maxWidth: 320,
+        overflow: 'hidden'
+      }}
+    >
       <Search size={14} color={t.subtext} />
-      <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} style={{ border: 'none', background: 'transparent', outline: 'none', fontSize: 12.5, lineHeight: '18px', color: t.text, width: '100%', padding: 0, minWidth: 0 }} />
+
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          border: 'none',
+          background: 'transparent',
+          outline: 'none',
+          fontSize: 12.5,
+          lineHeight: '16px',
+          color: t.text,
+          width: '100%',
+          height: '20px',
+          padding: 0,
+          margin: 0,
+          minWidth: 0
+        }}
+      />
     </div>
   );
 }
@@ -340,7 +376,7 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, schoolName,
     <div style={{ width: 236, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '20px 16px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0, position: sidebarOpen ? 'fixed' : undefined, left: 0, top: 0, zIndex: 70 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.blue, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><GraduationCap size={15} color="#fff" /></div>
+          <div style={{ width: 28, height: 28, borderRadius: 7, background: t.blue, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><img src={logo} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /></div>
           <div><span className="sa-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text, display: 'block' }}>Easy Class</span><span style={{ fontSize: 10, color: t.subtext }}>School admin</span></div>
         </div>
         {sidebarOpen && <button onClick={() => setSidebarOpen(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.subtext, display: 'flex' }}><X size={18} /></button>}

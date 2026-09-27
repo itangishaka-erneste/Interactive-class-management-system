@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import logo from './assets/esms.jpg';
+import { io } from 'socket.io-client';
 import {
-  User, Filter, BookOpen, Share2,
+  User, GraduationCap, Filter, BookOpen, Share2,
   Users, LogOut, Settings, Plus,
   Eye, Pencil, EyeOff, Trash2, X,
   ChevronDown, Clock, CheckCircle2, Circle, Menu, ArrowLeft,
   Save, FileText, AlertCircle, ListChecks, PenLine,
-  CalendarClock, PlusCircle, Sparkles, Lock, RefreshCw, Check, BarChart3
+  CalendarClock, PlusCircle, Sparkles, Lock, RefreshCw, Check, BarChart3,
+  Radio
 } from 'lucide-react';
 
 /* ============================================================================
@@ -18,8 +19,13 @@ import {
      teacher accepts it.
    - Drafts auto-save (debounced, one request at a time). Published items are
      never auto-saved, so students never see half-typed edits.
-   - The session token is read from localStorage("ecw_user_session"), the same
-     key the student dashboard uses.
+   - The session token is read from localStorage("ecw_teacher_session") -- a
+     key private to this dashboard (see the FIX note by USER_SESSION_KEY
+     below for why that separation matters).
+   - Realtime: connects to the same classroom Socket.IO namespace the student
+     dashboard uses, so a student joining a class, submitting a quiz, or this
+     teacher's own edits from another tab all show up live without a manual
+     refresh (see the socket effect inside the Teacher component below).
    ============================================================================ */
 
 /* ---------------------------------- THEME ---------------------------------- */
@@ -40,6 +46,11 @@ const inputStyle = {
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
+// Shared "show N, then a Show more button" page size used by every list on
+// this dashboard (notes, quizzes, quiz results) -- see the FIX notes near
+// NotesDashboard / QuizzesDashboard / ResultsPage below.
+const SHOW_MORE_STEP = 3;
+
 /* ------------------------------------ API ----------------------------------- */
 
 // Keep authentication and dashboard requests on the same backend. A deployed
@@ -48,7 +59,42 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 const API_BASE = (typeof window !== 'undefined' && window.ECW_API_BASE)
   || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE)
   || (typeof window !== 'undefined' ? window.location.origin : '');
-const USER_SESSION_KEY = 'ecw_user_session';
+// FIX (root cause of the "please sign in again" / dropped-live-updates bug):
+// this used to be "ecw_user_session", the EXACT SAME key student.jsx uses.
+// On any machine/browser where a teacher and a student are both signed in
+// (two tabs, or a teacher testing their own student view), whichever one
+// made a request LAST would overwrite the other's token in localStorage
+// (see saveRenewedToken below -- the sliding-session renewal writes back to
+// this key on every request). The next request from the other role then
+// sent a *student* token to a route that requires role "teacher" (or vice
+// versa), which classroom.js's requireMember() correctly rejects with
+// "Please sign in again as a teacher." -- exactly the confusing error this
+// was producing, and exactly why it seemed to happen "at random" right when
+// a student started a quiz. It also explains sockets dropping (a socket
+// reconnect grabs whatever token is in this slot right now) and refreshes
+// occasionally landing on the sign-in screen. Giving each dashboard its own
+// key removes the collision entirely.
+const USER_SESSION_KEY = 'ecw_teacher_session';
+
+// FIX: reloading the page (or the browser restoring the tab) used to always
+// dump the teacher back on "Notes" even if they were deep in "Quizzes" or
+// "Students". The current top-level section is now remembered here and
+// restored on boot, so a refresh stays where the teacher left off. Only the
+// top-level tabs are remembered on purpose -- "noteEditor"/"quizEditor"
+// depend on an in-memory note/quiz object that a fresh page load doesn't
+// have, so those fall back to their list view instead of a blank editor.
+const SECTION_STORAGE_KEY = 'ecw_teacher_section';
+const NAV_SECTIONS = ['notes', 'quizzes', 'students', 'settings'];
+function getStoredSection() {
+  try {
+    const s = localStorage.getItem(SECTION_STORAGE_KEY);
+    return NAV_SECTIONS.includes(s) ? s : 'notes';
+  } catch {
+    return 'notes';
+  }
+}
+
+const CLASSROOM_SOCKET_NAMESPACE = '/classroom';
 
 class ApiError extends Error {
   constructor(message, status) {
@@ -56,6 +102,25 @@ class ApiError extends Error {
     this.status = status;
   }
 }
+
+// FIX (part 2 of the same bug): a 401 from the server means the token
+// itself was rejected by classroom.js -- wrong role, expired, or the
+// account no longer exists. Previously only the very first page load
+// reacted to this (see load() below); a 401 from any OTHER request (e.g.
+// opening Students or Quiz results) just showed an inline "try again"
+// error forever, with no way out except a manual sign-out. Since a 401
+// only ever means the session is genuinely invalid (network failures throw
+// before reaching this check, in the catch block in api() below, so a
+// dropped wifi connection never triggers it), it's safe -- and much less
+// confusing -- to treat it the same way everywhere: sign the teacher out
+// for real, with a clear toast explaining why, instead of leaving them
+// stuck on an error card. A normal page refresh no longer does this at all,
+// because with the key collision above fixed the token is simply valid.
+let sessionExpiredHandler = null;
+function registerSessionExpiredHandler(fn) {
+  sessionExpiredHandler = fn;
+}
+
 function getSession() {
   try {
     const raw = localStorage.getItem(USER_SESSION_KEY);
@@ -112,6 +177,21 @@ function getSession() {
   }
 }
 
+// FIX (sliding session): the server quietly re-signs the token on every
+// authenticated request and sends it back in X-Renewed-Token (see
+// requireMember in classroom.js). Swapping it into localStorage here means
+// an actively-used session never runs out from under the teacher -- it only
+// ever ends when they explicitly sign out.
+function saveRenewedToken(response) {
+  try {
+    const renewed = response.headers.get('X-Renewed-Token');
+    if (!renewed) return;
+    const raw = localStorage.getItem(USER_SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : {};
+    localStorage.setItem(USER_SESSION_KEY, JSON.stringify({ ...(typeof parsed === 'object' && parsed ? parsed : {}), token: renewed }));
+  } catch { /* best-effort; never let this break a request */ }
+}
+
 // Do not leave the whole dashboard on an apparently frozen loading screen
 // while the hosted API is asleep or unreachable. The error view provides a
 // retry action when the request times out.
@@ -140,6 +220,7 @@ async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
   } finally {
     clearTimeout(timer);
   }
+  saveRenewedToken(response);
 
   let result;
   try {
@@ -147,7 +228,11 @@ async function api(path, { method = 'GET', body, timeoutMs = 25000 } = {}) {
   } catch {
     throw new ApiError('The server response was unreadable.', response.status);
   }
-  if (response.status === 401) throw new ApiError(result.message || 'Your session expired. Please sign in again.', 401);
+  if (response.status === 401) {
+    const message = result.message || 'Your session expired. Please sign in again.';
+    if (sessionExpiredHandler) sessionExpiredHandler(message);
+    throw new ApiError(message, 401);
+  }
   if (!response.ok || !result.success) throw new ApiError(result.message || 'Something went wrong.', response.status);
   return result;
 }
@@ -182,6 +267,18 @@ function localInputToIso(local) {
   const d = new Date(local);
   return isNaN(d) ? null : d.toISOString();
 }
+// For the live-activity feed: "just now", "3m ago", etc.
+function fmtRelative(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 10) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return fmtDate(iso);
+}
 
 const assignmentKey = (a) => (a ? `${a.classId}::${a.subject}` : '');
 
@@ -196,8 +293,7 @@ function GlobalStyle() {
   return (
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Inter:wght@400;500;600;700&display=swap');
-      * { box-sizing: border-box; border-radius: 6px !important; }
-      .td-spin, [style*="border-radius: 50%"] { border-radius: 50% !important; }
+      * { box-sizing: border-box; }
       .td-root { font-family: 'Inter', system-ui, sans-serif; background:#fff; }
       .td-heading { font-family: 'Poppins', system-ui, sans-serif; }
       @keyframes tdShimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
@@ -217,8 +313,10 @@ function GlobalStyle() {
       input[type="datetime-local"]::-webkit-calendar-picker-indicator { cursor: pointer; }
       input:focus, textarea:focus, select:focus, button:focus-visible { outline: 2px solid #2A5CDB55; outline-offset: 1px; }
       fieldset:disabled input, fieldset:disabled textarea, fieldset:disabled select { opacity: .65; cursor: not-allowed; }
+      @keyframes tdPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+      .td-live-dot { animation: tdPulse 1.6s ease-in-out infinite; }
       @media (prefers-reduced-motion: reduce) {
-        .td-skel, .td-fade, .td-toast, .td-spin { animation: none !important; }
+        .td-skel, .td-fade, .td-toast, .td-spin, .td-live-dot { animation: none !important; }
       }
       @media (max-width: 860px) {
         .td-hamburger { display: flex !important; }
@@ -595,12 +693,8 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 16px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
           <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(135deg, ${t.blue}, ${t.green})`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-
-<img
-  src={logo}
-  alt="Easy Class logo"
-  style={{ width: 50, height: 50, flexShrink: 0 }}
-/>          </div>
+            <GraduationCap size={16} color="#fff" strokeWidth={2.2} />
+          </div>
           <div>
             <span className="td-heading" style={{ fontSize: 14.5, fontWeight: 700, color: t.text, display: 'block', letterSpacing: -0.2 }}>Easy Class</span>
             <span style={{ fontSize: 10.5, color: t.subtext }}>Teacher workspace</span>
@@ -645,7 +739,7 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
 
 /* ---------------------------------- HEADER ---------------------------------- */
 
-function Header({ selectedClass, setSelectedClass, filterOptions, onNewNote, onNewQuiz, onMenu, title }) {
+function Header({ selectedClass, setSelectedClass, filterOptions, selectedSubject, setSelectedSubject, subjectOptions, onNewNote, onNewQuiz, onMenu, title, live }) {
   return (
     <div style={{ minHeight: 60, borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 20px', gap: 12, background: '#fff', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -653,7 +747,18 @@ function Header({ selectedClass, setSelectedClass, filterOptions, onNewNote, onN
         <h2 className="td-heading" style={{ margin: 0, fontSize: 15, fontWeight: 700, color: t.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</h2>
       </div>
       <div className="td-header-actions" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span title={live ? 'Connected. Student activity appears instantly.' : 'Not connected. Reconnecting…'}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 700, color: live ? t.green : t.faint }}>
+          <span className={live ? 'td-live-dot' : ''} style={{ width: 7, height: 7, borderRadius: '50%', background: live ? t.green : t.faint }} />
+          {live ? 'Live' : 'Offline'}
+        </span>
         <Dropdown value={selectedClass} options={filterOptions} onChange={setSelectedClass} icon={Filter} />
+        {/* FIX (requested filter): a class filter alone wasn't enough -- a
+            teacher who teaches several subjects in the same class had no way
+            to narrow notes/quizzes/results down to just one subject. This is
+            the second dropdown; its options are derived from the currently
+            selected class in the parent (see subjectOptions in Teacher()). */}
+        <Dropdown value={selectedSubject} options={subjectOptions} onChange={setSelectedSubject} icon={BookOpen} />
         <PrimaryButton variant="outline" icon={Plus} onClick={onNewNote}>New note</PrimaryButton>
         <PrimaryButton variant="soft" icon={Plus} onClick={onNewQuiz}>New quiz</PrimaryButton>
       </div>
@@ -670,6 +775,38 @@ function Tabs({ tabs, active, onChange }) {
           {tab.label} ({tab.count})
         </button>
       ))}
+    </div>
+  );
+}
+
+/* ------------------------------- LIVE ACTIVITY -------------------------------- */
+
+// Realtime feed of what students are doing right now: joining a class,
+// submitting a quiz. Fed by the Socket.IO listeners set up in the Teacher
+// component (student:joined, quiz:submission) - see the socket effect below.
+function LiveActivityPanel({ activity, live }) {
+  return (
+    <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ padding: '11px 16px', background: t.panel, display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Radio size={14} color={live ? t.green : t.faint} />
+        <span className="td-heading" style={{ fontSize: 13, fontWeight: 700, color: t.text }}>Live student activity</span>
+        <span style={{ marginLeft: 'auto', fontSize: 10.5, fontWeight: 700, color: live ? t.green : t.faint }}>{live ? 'Connected' : 'Reconnecting…'}</span>
+      </div>
+      {activity.length === 0 ? (
+        <p style={{ margin: 0, padding: 18, fontSize: 12.5, color: t.subtext }}>Nothing yet. As students join your classes or submit quizzes, it will show up here in real time.</p>
+      ) : (
+        <div className="td-scroll" style={{ maxHeight: 220, overflowY: 'auto' }}>
+          {activity.slice(0, 20).map((a) => (
+            <div key={a.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 16px', borderTop: `1px solid ${t.border}` }}>
+              <span style={{ width: 7, height: 7, marginTop: 5, borderRadius: '50%', background: t.green, flexShrink: 0 }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <p style={{ margin: 0, fontSize: 12.5, color: t.text }}>{a.text}</p>
+                <p style={{ margin: '2px 0 0', fontSize: 10.5, color: t.faint }}>{fmtRelative(a.at)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -707,6 +844,20 @@ function NoAssignmentsNotice({ show, onGoSettings }) {
     <Notice tone="orange" action={<PrimaryButton variant="outline" onClick={onGoSettings}>Open settings</PrimaryButton>}>
       Add the classes and subjects you teach in Settings before creating notes or quizzes.
     </Notice>
+  );
+}
+
+/* ------------------------------- SHOW MORE ------------------------------------ */
+// FIX (requested pagination): notes and quizzes can pile up fast. Rather
+// than dumping the whole list on screen, show SHOW_MORE_STEP items and let
+// the teacher reveal more on demand. This one button is reused by every
+// paginated list (notes, quizzes, quiz results) below.
+function ShowMoreButton({ remaining, onClick }) {
+  if (remaining <= 0) return null;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}>
+      <PrimaryButton variant="outline" onClick={onClick}>Show more ({remaining} more)</PrimaryButton>
+    </div>
   );
 }
 
@@ -773,6 +924,13 @@ function NotePreviewModal({ note, onClose }) {
 
 function NotesDashboard({ notes, filter, setFilter, onView, onEdit, onTogglePublish, onDelete, onNewNote, busyAction, noAssignments, goSettings }) {
   const filtered = notes.filter((n) => (filter === 'all' ? true : filter === 'published' ? n.status === 'published' : n.status === 'draft'));
+  // FIX (requested pagination): show SHOW_MORE_STEP notes at a time instead
+  // of the whole (possibly long) list. Resets to the first page whenever the
+  // tab/filter changes or the underlying list is replaced (e.g. the class or
+  // subject filter up in the header changed), so the teacher never lands on
+  // an empty "page 3" after switching filters.
+  const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
+  useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [filter, notes]);
   const stats = {
     total: notes.length,
     published: notes.filter((n) => n.status === 'published').length,
@@ -803,9 +961,12 @@ function NotesDashboard({ notes, filter, setFilter, onView, onEdit, onTogglePubl
           text={notes.length === 0 ? 'Create your first note for one of your classes.' : 'No notes match this filter yet.'}
           action={notes.length === 0 && <div style={{ marginTop: 12 }}><PrimaryButton icon={Plus} onClick={onNewNote}>Create your first note</PrimaryButton></div>} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
-          {filtered.map((n) => <NoteCard key={n.id} note={n} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} busyAction={busyAction} />)}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
+            {filtered.slice(0, visibleCount).map((n) => <NoteCard key={n.id} note={n} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} busyAction={busyAction} />)}
+          </div>
+          <ShowMoreButton remaining={filtered.length - visibleCount} onClick={() => setVisibleCount((n) => n + SHOW_MORE_STEP)} />
+        </>
       )}
     </div>
   );
@@ -1050,7 +1211,7 @@ function QuizCard({ quiz, onView, onEdit, onTogglePublish, onDelete, onSchedule,
       <div>
         <h4 className="td-heading" style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: t.text }}>{quiz.title || 'Untitled quiz'}</h4>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5, color: t.subtext, fontSize: 11, flexWrap: 'wrap' }}>
-          <ListChecks size={11} /><span>{quiz.questions.length} question{quiz.questions.length === 1 ? '' : 's'}</span>
+          <ListChecks size={11} /><span>{quiz.questions.length} question{quiz.questions.length === 1 ? '' : 's'} · {quiz.questions.reduce((s, q) => s + (q.marks || 1), 0)} marks</span>
           {quiz.timeLimitMinutes ? <><span>·</span><span>{quiz.timeLimitMinutes} min</span></> : null}
           {quiz.attemptCount > 0 ? <><span>·</span><Lock size={10} /><span>{quiz.attemptCount} started</span></> : null}
         </div>
@@ -1118,7 +1279,7 @@ function QuizPreviewModal({ quiz, onClose }) {
           {quiz.questions.length === 0 && <p style={{ color: t.subtext, fontSize: 13 }}>No questions added yet.</p>}
           {quiz.questions.map((q, i) => (
             <div key={q.id} style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: 13 }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text }}>Q{i + 1}. {q.question || 'Untitled question'}</p>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: t.text }}>Q{i + 1}. {q.question || 'Untitled question'} <span style={{ fontWeight: 500, color: t.subtext, fontSize: 11 }}>({q.marks ?? 1} mark{(q.marks ?? 1) === 1 ? '' : 's'})</span></p>
               <div style={{ marginTop: 9, display: 'flex', flexDirection: 'column', gap: 5 }}>
                 {q.options.length === 0 && <p style={{ margin: 0, fontSize: 11.5, color: t.orange }}>No options yet.</p>}
                 {q.options.map((o) => <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12, color: o.isCorrect ? t.green : t.text }}>{o.isCorrect ? <CheckCircle2 size={13} /> : <Circle size={13} color={t.faint} />} {o.optionText || 'Option'}</div>)}
@@ -1133,6 +1294,11 @@ function QuizPreviewModal({ quiz, onClose }) {
 
 function QuizzesDashboard({ quizzes, filter, setFilter, onView, onEdit, onTogglePublish, onDelete, onNewQuiz, onSchedule, busyAction, noAssignments, goSettings }) {
   const filtered = quizzes.filter((q) => (filter === 'all' ? true : filter === 'published' ? q.status === 'published' : q.status === 'draft'));
+  // FIX (requested pagination): same "show 3, then Show more" treatment as
+  // the notes dashboard, so a busy teacher's quiz list doesn't turn into an
+  // endless wall of cards.
+  const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
+  useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [filter, quizzes]);
   const stats = { total: quizzes.length, published: quizzes.filter((q) => q.status === 'published').length, draft: quizzes.filter((q) => q.status === 'draft').length };
   return (
     <div className="td-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -1159,9 +1325,12 @@ function QuizzesDashboard({ quizzes, filter, setFilter, onView, onEdit, onToggle
           text={quizzes.length === 0 ? 'Build a quiz for one of your classes.' : 'No quizzes match this filter yet.'}
           action={quizzes.length === 0 && <div style={{ marginTop: 12 }}><PrimaryButton icon={Plus} onClick={onNewQuiz}>Build your first quiz</PrimaryButton></div>} />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
-          {filtered.map((q) => <QuizCard key={q.id} quiz={q} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} onSchedule={onSchedule} busyAction={busyAction} />)}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
+            {filtered.slice(0, visibleCount).map((q) => <QuizCard key={q.id} quiz={q} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} onSchedule={onSchedule} busyAction={busyAction} />)}
+          </div>
+          <ShowMoreButton remaining={filtered.length - visibleCount} onClick={() => setVisibleCount((n) => n + SHOW_MORE_STEP)} />
+        </>
       )}
     </div>
   );
@@ -1178,7 +1347,21 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
     <div style={{ border: `1px solid ${t.border}`, borderRadius: 8, padding: 15, background: t.panel }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 11 }}>
         <span style={{ fontSize: 11.5, fontWeight: 800, color: t.blue }}>Question {index + 1}</span>
-        <IconBtn size={26} icon={Trash2} tone="orange" onClick={onRemove} title="Remove question" />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* FIX: a per-question weight has existed in the database since the
+              "harder questions can count for more" migration, but nothing on
+              this screen ever let a teacher set it -- so every question was
+              silently worth 1 mark no matter what. */}
+          <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: t.subtext }}>
+            Worth
+            <input type="number" min={1} max={100} value={q.marks ?? 1}
+              onChange={(e) => setField({ marks: Math.max(1, Math.min(100, Number.parseInt(e.target.value, 10) || 1)) })}
+              aria-label={`Marks for question ${index + 1}`}
+              style={{ ...inputStyle, width: 52, padding: '5px 6px', fontSize: 11.5, textAlign: 'center' }} />
+            mark{(q.marks ?? 1) === 1 ? '' : 's'}
+          </label>
+          <IconBtn size={26} icon={Trash2} tone="orange" onClick={onRemove} title="Remove question" />
+        </div>
       </div>
       <textarea value={q.question} onChange={(e) => setField({ question: e.target.value })} rows={2} placeholder="Write the question…" aria-label={`Question ${index + 1}`}
         style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
@@ -1211,6 +1394,7 @@ function firstQuizProblem(questions) {
     if (!q.question.trim()) return `Question ${i + 1} has no text.`;
     if (options.length < 2) return `Question ${i + 1} needs at least two options.`;
     if (options.filter((o) => o.isCorrect).length !== 1) return `Question ${i + 1} needs exactly one correct answer.`;
+    if (!Number.isInteger(q.marks) || q.marks < 1) return `Question ${i + 1} needs a mark value of at least 1.`;
   }
   return '';
 }
@@ -1218,6 +1402,7 @@ function firstQuizProblem(questions) {
 const toEditorQuestion = (q) => ({
   id: uid(),
   question: q.question,
+  marks: 1,
   options: q.options.map((o) => ({ id: uid(), optionText: o.optionText, isCorrect: !!o.isCorrect })),
 });
 
@@ -1408,7 +1593,7 @@ function QuizEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
   const back = async () => { if (busy) return; if (await leave()) onClose(); };
 
-  const addQuestion = () => setQuestions((qs) => (qs.length >= 50 ? qs : [...qs, { id: uid(), question: '', options: [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }] }]));
+  const addQuestion = () => setQuestions((qs) => (qs.length >= 50 ? qs : [...qs, { id: uid(), question: '', marks: 1, options: [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }] }]));
   const updateQuestion = (id, next) => setQuestions((qs) => qs.map((q) => (q.id === id ? next : q)));
   const removeQuestion = (id) => setQuestions((qs) => qs.filter((q) => q.id !== id));
 
@@ -1546,7 +1731,7 @@ function ErrorBlock({ message, onRetry }) {
   );
 }
 
-function StudentsPage({ request, classFilter }) {
+function StudentsPage({ request, classFilter, activity, live }) {
   const { loading, error, data, reload } = useRemote(() => request('/students').then((r) => r.students), [request]);
   const [query, setQuery] = useState('');
 
@@ -1570,6 +1755,8 @@ function StudentsPage({ request, classFilter }) {
         </div>
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search by name or email" aria-label="Search students" style={{ ...inputStyle, width: 240 }} />
       </div>
+
+      <LiveActivityPanel activity={activity} live={live} />
 
       {students.length === 0 ? (
         <EmptyState icon={Users} title={data.length === 0 ? 'No students yet' : 'No matches'}
@@ -1606,7 +1793,14 @@ function QuizResultsDetail({ quiz, request, onBack }) {
         <IconBtn icon={ArrowLeft} onClick={onBack} title="Back to results" />
         <div style={{ minWidth: 0 }}>
           <h2 className="td-heading" style={{ margin: 0, fontSize: 16, color: t.text }}>{quiz.title}</h2>
-          <p style={{ margin: '3px 0 0', fontSize: 11.5, color: t.subtext }}>{quiz.className} · {quiz.subject}</p>
+          {/* FIX (requested filter/clarity): the class this quiz belongs to was
+              shown, but the SUBJECT was easy to miss -- important the moment a
+              teacher teaches the same class for two subjects. Both are now
+              shown as chips, matching how they appear everywhere else. */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 4, flexWrap: 'wrap' }}>
+            <Chip tone="blue">{quiz.className}</Chip>
+            <Chip tone="green">{quiz.subject}</Chip>
+          </div>
         </div>
       </div>
 
@@ -1666,30 +1860,47 @@ function QuizResultsDetail({ quiz, request, onBack }) {
   );
 }
 
-function ResultsPage({ quizzes, request, classFilter }) {
+// FIX (requested filter): quiz results can now be narrowed by class AND
+// subject (subjectFilter), and the list is paginated (Show more) like every
+// other list on this dashboard, so a school with many quizzes stays usable.
+function ResultsPage({ quizzes, request, classFilter, subjectFilter }) {
   const [openQuiz, setOpenQuiz] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(SHOW_MORE_STEP);
+
+  const list = quizzes.filter((q) =>
+    (q.status === 'published' || q.attemptCount > 0) &&
+    (classFilter === 'All Classes' || q.className === classFilter) &&
+    (subjectFilter === undefined || subjectFilter === 'All Subjects' || q.subject === subjectFilter)
+  );
+
+  useEffect(() => { setVisibleCount(SHOW_MORE_STEP); }, [classFilter, subjectFilter, quizzes]);
+
   if (openQuiz) return <QuizResultsDetail quiz={openQuiz} request={request} onBack={() => setOpenQuiz(null)} />;
 
-  const list = quizzes.filter((q) => (q.status === 'published' || q.attemptCount > 0) && (classFilter === 'All Classes' || q.className === classFilter));
+  const visible = list.slice(0, visibleCount);
+
   return (
     <div className="td-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div>
         <p className="td-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>Quiz results</p>
-        <p style={{ margin: '3px 0 0', fontSize: 13, color: t.subtext }}>Open a quiz to see every student's score and which questions were hardest.</p>
+        <p style={{ margin: '3px 0 0', fontSize: 13, color: t.subtext }}>Open a quiz to see every student's score, which class and subject it belongs to, and which questions were hardest.</p>
       </div>
       {list.length === 0 ? (
         <EmptyState icon={BarChart3} title="No results yet" text="Publish a quiz and results appear here as students submit." />
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
-          {list.map((q) => (
-            <button type="button" key={q.id} onClick={() => setOpenQuiz(q)} className="td-card td-btn"
-              style={{ textAlign: 'left', background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 16, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <span className="td-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{q.title}</span>
-              <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><Chip tone="blue">{q.className}</Chip><Chip>{q.subject}</Chip></span>
-              <span style={{ fontSize: 12, color: t.subtext }}>{q.submittedCount} submitted · {q.attemptCount} started</span>
-            </button>
-          ))}
-        </div>
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
+            {visible.map((q) => (
+              <button type="button" key={q.id} onClick={() => setOpenQuiz(q)} className="td-card td-btn"
+                style={{ textAlign: 'left', background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 16, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <span className="td-heading" style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{q.title}</span>
+                <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}><Chip tone="blue">{q.className}</Chip><Chip tone="green">{q.subject}</Chip></span>
+                <span style={{ fontSize: 12, color: t.subtext }}>{q.submittedCount} submitted · {q.attemptCount} started</span>
+              </button>
+            ))}
+          </div>
+          <ShowMoreButton remaining={list.length - visibleCount} onClick={() => setVisibleCount((n) => n + SHOW_MORE_STEP)} />
+        </>
       )}
     </div>
   );
@@ -1813,9 +2024,13 @@ export default function Teacher({ onSignOut }) {
   const [notes, setNotes] = useState([]);
   const [quizzes, setQuizzes] = useState([]);
 
-  const [section, setSection] = useState('notes');
+  const [section, setSection] = useState(getStoredSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [selectedClass, setSelectedClass] = useState('All Classes');
+  // FIX (requested filter): subject filter alongside the class filter, so a
+  // teacher who teaches several subjects in one class can narrow everything
+  // -- notes, quizzes, and results -- down to just one.
+  const [selectedSubject, setSelectedSubject] = useState('All Subjects');
   const [notesFilter, setNotesFilter] = useState('all');
   const [quizzesFilter, setQuizzesFilter] = useState('all');
 
@@ -1830,17 +2045,46 @@ export default function Teacher({ onSignOut }) {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [busyAction, setBusyAction] = useState(null);
 
+  // Realtime connection state + a rolling feed of student activity (joins,
+  // quiz submissions) fed by the socket effect below. See LiveActivityPanel.
+  const [live, setLive] = useState(false);
+  const [activity, setActivity] = useState([]);
+  const pushActivity = useCallback((text) => {
+    setActivity((list) => [{ id: uid(), text, at: new Date().toISOString() }, ...list].slice(0, 50));
+  }, []);
+  // Tracks which students are currently away from a quiz tab (`${quizId}:${studentId}`
+  // -> true), purely so the socket handlers above only log the away/return
+  // transitions instead of every once-a-second penalty ping.
+  const awayRef = useRef({});
+
   // The open editor registers a function here that saves pending work (or asks
   // before discarding it). Every way of leaving the editor goes through it.
   const leaveGuardRef = useRef(null);
 
   const handleSignOut = useCallback(() => {
-    try { localStorage.removeItem(USER_SESSION_KEY); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(USER_SESSION_KEY);
+      localStorage.removeItem(SECTION_STORAGE_KEY);
+    } catch { /* ignore */ }
     if (onSignOut) onSignOut();
     else window.location.assign('/');
   }, [onSignOut]);
   const signOutRef = useRef(handleSignOut);
   signOutRef.current = handleSignOut;
+
+  // FIX: wire a genuine 401 (see registerSessionExpiredHandler near api()
+  // above) to a real sign-out with a clear toast, everywhere in the app --
+  // not just on the very first page load. This is what stops the dashboard
+  // from ever getting stuck on a dead-end "try again / sign out" card: if
+  // the session is truly invalid, the teacher is taken straight back to
+  // sign-in with an explanation, instead of being left on a broken page.
+  useEffect(() => {
+    registerSessionExpiredHandler((message) => {
+      toast(message, 'error');
+      signOutRef.current();
+    });
+    return () => registerSessionExpiredHandler(null);
+  }, [toast]);
 
   // Every request goes through here so an expired session always ends in sign-out.
 const request = useCallback((path, opts) => api(path, opts), []);
@@ -1882,10 +2126,134 @@ const load = useCallback(async () => {
 
   useEffect(() => { load(); }, [load]);
 
+  // Keep the reload-friendly section in sync whenever it lands on one of the
+  // top-level tabs (never while an editor is open -- see the comment by
+  // SECTION_STORAGE_KEY above).
+  useEffect(() => {
+    if (NAV_SECTIONS.includes(section)) {
+      try { localStorage.setItem(SECTION_STORAGE_KEY, section); } catch { /* ignore */ }
+    }
+  }, [section]);
+
   const filterOptions = ['All Classes', ...new Set(assignments.map((a) => a.className))];
-  const matchesClass = (className) => selectedClass === 'All Classes' || className === selectedClass;
-  const visibleNotes = notes.filter((n) => matchesClass(n.className));
-  const visibleQuizzes = quizzes.filter((q) => matchesClass(q.className));
+  // Subject options narrow to the currently selected class, so the dropdown
+  // never offers a class/subject combination that doesn't actually exist.
+  const subjectOptions = ['All Subjects', ...new Set(
+    assignments
+      .filter((a) => selectedClass === 'All Classes' || a.className === selectedClass)
+      .map((a) => a.subject)
+  )];
+  useEffect(() => {
+    if (selectedSubject !== 'All Subjects' && !subjectOptions.includes(selectedSubject)) {
+      setSelectedSubject('All Subjects');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClass, assignments]);
+
+  const matchesFilter = (className, subject) =>
+    (selectedClass === 'All Classes' || className === selectedClass) &&
+    (selectedSubject === 'All Subjects' || subject === selectedSubject);
+  const visibleNotes = notes.filter((n) => matchesFilter(n.className, n.subject));
+  const visibleQuizzes = quizzes.filter((q) => matchesFilter(q.className, q.subject));
+
+  const upsertNote = useCallback((note) => setNotes((list) => upsertById(list, note)), []);
+  const upsertQuiz = useCallback((quiz) => setQuizzes((list) => upsertById(list, quiz)), []);
+
+  // ---------------------------------------------------------------------
+  // Realtime connection to the classroom namespace.
+  //
+  // Same reasoning as the student dashboard: a dropped connection is not a
+  // sign-out, and Socket.IO keeps retrying on its own. Two kinds of events
+  // land here:
+  //   - Student activity for classes this teacher teaches (student:joined,
+  //     quiz:submission) -> fills the live activity feed and nudges the
+  //     relevant counts, so the teacher can watch it happen in real time.
+  //   - The teacher's OWN edits echoed back (note:saved/deleted,
+  //     quiz:saved/deleted) -> keeps a second open tab/device in sync.
+  //
+  // FIX: this connection used to intermittently authenticate with the
+  // WRONG token whenever a student session on the same browser had just
+  // overwritten the shared "ecw_user_session" key (see the USER_SESSION_KEY
+  // note near the top of this file). getSession() now reads the
+  // teacher-only key, so this socket -- and therefore all the live
+  // student-progress events below -- keeps working even while a student is
+  // actively taking a quiz in another tab.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    const session = getSession();
+    if (!session?.token) return undefined;
+
+    // FIX: `auth` used to be a plain object captured once, at the moment
+    // this effect ran. If the token was renewed later (see the sliding
+    // session in api() above) or Socket.IO had to reconnect after a drop,
+    // it kept retrying with that same, now-stale, captured value instead of
+    // whatever is actually in localStorage. Passing a function instead
+    // makes Socket.IO call it fresh on every single (re)connection attempt.
+    const socket = io(`${API_BASE}${CLASSROOM_SOCKET_NAMESPACE}`, {
+      auth: (cb) => cb({ token: getSession()?.token }),
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
+    });
+
+    socket.on('connect', () => setLive(true));
+    socket.on('disconnect', () => setLive(false)); // temporary — not a sign-out
+    socket.on('connect_error', (err) => {
+      setLive(false);
+      // Realtime authentication is independent of the HTTP session. A socket
+      // rejection should not eject the teacher from the dashboard; reconnect
+      // attempts retrieve the current token from storage via the auth callback.
+      if (err?.message === 'unauthorized') {
+        toast('Live updates are unavailable. Your dashboard session remains active.', 'error');
+      }
+    });
+
+    socket.on('student:joined', (info) => {
+      pushActivity(`${info.fullName} joined ${info.className}.`);
+      toast(`${info.fullName} joined ${info.className}.`);
+    });
+
+    // FIX (new): the server has always emitted these three events the
+    // moment a student starts a quiz, leaves the tab, or comes back, but
+    // nothing here was listening for them, so a teacher had no way to watch
+    // a quiz happen live. `awayRef` tracks who is currently away so the
+    // per-second penalty pings (see student.jsx) don't flood this feed —
+    // only the start/leave/return transitions are logged.
+    socket.on('quiz:studentStarted', (info) => {
+      pushActivity(`${info.studentName} started "${info.quizTitle}".`);
+    });
+    socket.on('quiz:studentAway', (info) => {
+      const key = `${info.quizId}:${info.studentId}`;
+      if (!awayRef.current[key]) {
+        awayRef.current[key] = true;
+        pushActivity(`${info.studentName} left the "${info.quizTitle}" tab — penalty is building up.`);
+      }
+    });
+    socket.on('quiz:studentReturned', (info) => {
+      const key = `${info.quizId}:${info.studentId}`;
+      delete awayRef.current[key];
+      pushActivity(`${info.studentName} came back to "${info.quizTitle}".`);
+    });
+
+    socket.on('quiz:submission', (info) => {
+      pushActivity(`${info.studentName} scored ${info.scorePercent}% on "${info.quizTitle}".`);
+      toast(`${info.studentName} submitted "${info.quizTitle}" — ${info.scorePercent}%.`);
+      setQuizzes((list) => list.map((q) => (q.id === info.quizId ? { ...q, submittedCount: (q.submittedCount || 0) + 1 } : q)));
+    });
+
+    // Keep this tab in sync with edits made from another tab/device on the
+    // same teacher account.
+    socket.on('note:saved', (note) => upsertNote(note));
+    socket.on('note:deleted', ({ id }) => setNotes((list) => list.filter((n) => n.id !== id)));
+    socket.on('quiz:saved', (quiz) => upsertQuiz(quiz));
+    socket.on('quiz:deleted', ({ id }) => setQuizzes((list) => list.filter((q) => q.id !== id)));
+
+    return () => {
+      socket.disconnect();
+      setLive(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast, pushActivity, upsertNote, upsertQuiz]);
 
   /* ---- navigation (always passes through the editor's leave guard) ---- */
   const guarded = useCallback(async (fn) => {
@@ -1913,9 +2281,6 @@ const load = useCallback(async () => {
 
   const closeNoteEditor = () => { setEditingNote(null); setSection('notes'); };
   const closeQuizEditor = () => { setEditingQuiz(null); setSection('quizzes'); };
-
-  const upsertNote = useCallback((note) => setNotes((list) => upsertById(list, note)), []);
-  const upsertQuiz = useCallback((quiz) => setQuizzes((list) => upsertById(list, quiz)), []);
 
   /* ---- publish / unpublish ---- */
   const toggleNotePublish = async (note) => {
@@ -2021,7 +2386,8 @@ const load = useCallback(async () => {
 
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
           <Header selectedClass={selectedClass} setSelectedClass={setSelectedClass} filterOptions={filterOptions}
-            onNewNote={openNewNote} onNewQuiz={openNewQuiz} onMenu={() => setSidebarOpen(true)} title={titles[section]} />
+            selectedSubject={selectedSubject} setSelectedSubject={setSelectedSubject} subjectOptions={subjectOptions}
+            onNewNote={openNewNote} onNewQuiz={openNewQuiz} onMenu={() => setSidebarOpen(true)} title={titles[section]} live={live} />
 
           <div className="td-scroll" style={{ flex: 1, overflowY: 'auto' }}>
             {section === 'notes' && (
@@ -2045,8 +2411,8 @@ const load = useCallback(async () => {
               <QuizEditor key={editingQuiz.id || 'new-quiz'} initial={editingQuiz} assignments={assignments} request={request}
                 onSaved={upsertQuiz} onClose={closeQuizEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} />
             )}
-            {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} />}
-            {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} />}
+            {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} activity={activity} live={live} />}
+            {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} subjectFilter={selectedSubject} />}
             {section === 'settings' && (
               <SettingsPage me={me} assignments={assignments} classes={classes} request={request} toast={toast}
                 onChange={(nextAssignments, nextClasses) => { setAssignments(nextAssignments); setClasses(nextClasses); }} />
