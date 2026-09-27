@@ -39,9 +39,11 @@ const fmtDateTime = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d
 
 // Local backend while you run `npm run dev`, hosted backend once you deploy.
 // (Vite sets import.meta.env.DEV to true only in dev.) Change either URL if needed.
-const API_BASE = import.meta.env.DEV
-  ? 'http://localhost:5000'
-  : 'https://easy-class-work-records.onrender.com';
+const API_BASE =
+  import.meta.env?.VITE_API_BASE ||
+  (import.meta.env.DEV
+    ? 'http://localhost:5000'
+    : 'https://esms-backed.onrender.com');
 const SUPERADMIN_SESSION_KEY = 'ecw_superadmin_session';
 const ANNOUNCEMENTS_KEY = 'ecw_superadmin_announcements';
 
