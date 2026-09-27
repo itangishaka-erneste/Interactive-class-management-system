@@ -31,6 +31,9 @@ import {
   Mail,
   Clock3,
   CheckCircle2,
+  TrendingUp,
+  ArrowUpRight,
+  Quote,
 } from "lucide-react";
 
 /* ============================================================================
@@ -57,6 +60,12 @@ import {
      server issues. A class/subject the teacher adds at sign-in is saved
      through POST /api/teacher/assignments, the same endpoint the teacher
      dashboard's Settings page uses.
+
+   NOTE ON THIS PASS
+   This is a visual-only redesign of the same page (now Home.jsx). The color
+   palette is untouched (same green / navy / orange), and every auth/session/
+   API call below is byte-for-byte the same as before: same endpoints, same
+   storage keys, same fetch calls. Only markup, layout and CSS changed.
    ============================================================================ */
 
 const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "";
@@ -100,8 +109,13 @@ const LOADING_STEPS = [
 // Placeholder shown in the school code input hints.
 const DEFAULT_SCHOOL_CODE = "ECR-123456";
 
-// Icons cycled through in the featured partners ad carousel.
-const AD_CIRCLE_ICONS = [Star, Trophy, Handshake];
+// Rotating screenshots shown inside the hero's browser-window mockup. Purely
+// presentational — nothing here talks to the server.
+const AD_SLIDES = [
+  { image: trends, icon: TrendingUp, caption: "Pass rates trending up, term over term", path: "/dashboard · trends" },
+  { image: dashboard, icon: LayoutDashboard, caption: "One dashboard for the whole school", path: "/dashboard · overview" },
+  { image: esms, icon: ShieldCheck, caption: "142+ verified schools, one system", path: "/dashboard · schools" },
+];
 
 // Every subject a teacher can pick from when choosing what they teach.
 const SUBJECT_OPTIONS = [
@@ -124,6 +138,44 @@ const ROLE_CONFIG = {
 };
 
 const isAdminRole = (role) => role === "schoolAdmin" || role === "superAdmin";
+
+/* ============================================================================
+   PRESENTATION-ONLY HELPERS
+   One small hook powers every scroll-in reveal on the page, so the motion
+   language stays consistent instead of a different effect per section.
+   ============================================================================ */
+
+function useReveal(options) {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof IntersectionObserver === "undefined") { setVisible(true); return undefined; }
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.2, ...options }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return [ref, visible];
+}
+
+function Reveal({ children, className = "", as: Tag = "div" }) {
+  const [ref, visible] = useReveal();
+  return (
+    <Tag ref={ref} className={`ecw-reveal ${visible ? "ecw-reveal-visible" : ""} ${className}`}>
+      {children}
+    </Tag>
+  );
+}
 
 /* ============================================================================
    REAL GOOGLE SIGN-IN (Google Identity Services)
@@ -219,15 +271,15 @@ function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
     <div>
       <div ref={containerRef} className="flex justify-center min-h-[44px]" />
       {status === "loading" && (
-        <p className="text-[11px] text-neutral-400 text-center">Loading Google sign-in…</p>
+        <p className="ecw-fade-in text-[11px] text-neutral-400 text-center">Loading Google sign-in…</p>
       )}
       {status === "missing" && (
-        <p className="text-[11px] font-semibold text-red-600 text-center">
+        <p className="ecw-fade-in text-[11px] font-semibold text-red-600 text-center">
           Google sign-in isn't configured. Set VITE_GOOGLE_CLIENT_ID in your .env file.
         </p>
       )}
       {status === "error" && (
-        <p className="text-[11px] font-semibold text-red-600 text-center">
+        <p className="ecw-fade-in text-[11px] font-semibold text-red-600 text-center">
           Couldn't load Google sign-in. Check your connection and try again.
         </p>
       )}
@@ -256,18 +308,18 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className={`w-full flex items-center justify-between text-xs px-3 py-2.5 rounded-lg border bg-white text-left focus:outline-none ${error ? "border-red-400" : "border-neutral-200 focus:border-green-400"}`}
+        className={`w-full flex items-center justify-between text-xs px-3 py-2.5 rounded-lg border bg-white text-left focus:outline-none transition-colors ${error ? "border-red-400" : "border-neutral-200 focus:border-green-400"}`}
       >
         <span className={selected ? "text-neutral-800" : "text-neutral-400"}>
           {loading ? "Loading schools…" : selected ? selected.name : "Select your school"}
         </span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform duration-200 ${open ? "rotate-180" : ""}`}>
           <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
 
       {open && (
-        <div className="absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
+        <div className="ecw-dropdown-pop absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
           {schools.length === 0 && !loading && (
             <p className="px-3 py-3 text-[11px] text-neutral-400">
               No approved schools yet. Your school must be registered and approved first.
@@ -278,7 +330,7 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
             return (
               <label
                 key={school.id}
-                className="flex items-center gap-2.5 px-3 py-2.5 text-xs hover:bg-neutral-50 cursor-pointer border-b border-neutral-50 last:border-b-0"
+                className="flex items-center gap-2.5 px-3 py-2.5 text-xs hover:bg-neutral-50 cursor-pointer border-b border-neutral-50 last:border-b-0 transition-colors"
               >
                 <input
                   type="checkbox"
@@ -306,7 +358,7 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
 // Shown once a Google account is attached to the registration/login form.
 function GoogleAccountChip({ account, onSwitch }) {
   return (
-    <div className="flex items-center gap-2.5 rounded-lg border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
+    <div className="ecw-fade-in flex items-center gap-2.5 rounded-lg border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
       {account.picture ? (
         <img src={account.picture} alt="" referrerPolicy="no-referrer" className="w-8 h-8 rounded-full shrink-0 ring-1 ring-[#178754]/20" />
       ) : (
@@ -349,11 +401,11 @@ function AuthModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
+      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
       role="dialog" aria-modal="true"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-white flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
           <span className="w-11 h-11 shrink-0 rounded-full bg-[#EAF6EF] flex items-center justify-center overflow-hidden ring-1 ring-[#178754]/20">
             <RoleIcon className="w-5 h-5 text-[#178754]" aria-hidden="true" />
@@ -371,7 +423,7 @@ function AuthModal({
 
         <div className="px-5 sm:px-6 py-5">
           {formError && (
-            <div className="mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+            <div className="ecw-fade-in mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
               {formError}
             </div>
           )}
@@ -388,13 +440,13 @@ function AuthModal({
 
               {autoSignIn ? (
                 authSubmitting && (
-                  <p className="text-center text-[11px] font-semibold text-[#178754]">Signing you in…</p>
+                  <p className="ecw-fade-in text-center text-[11px] font-semibold text-[#178754]">Signing you in…</p>
                 )
               ) : (
                 <button
                   type="submit"
                   disabled={!googleAccount || authSubmitting}
-                  className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {authSubmitting ? "Signing in…" : "Continue to dashboard"}
                 </button>
@@ -437,7 +489,7 @@ function AuthModal({
                   type="text" required disabled={!googleAccount} value={registerForm.fullName}
                   onChange={(e) => setRegisterForm((f) => ({ ...f, fullName: e.target.value }))}
                   placeholder="Full name"
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed"
+                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed transition-colors"
                 />
               </div>
               <div>
@@ -454,12 +506,12 @@ function AuthModal({
                   type="text" required disabled={!googleAccount} value={registerForm.schoolCode}
                   onChange={(e) => setRegisterForm((f) => ({ ...f, schoolCode: e.target.value }))}
                   placeholder={`Given by your school (e.g. ${DEFAULT_SCHOOL_CODE})`}
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed"
+                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed transition-colors"
                 />
               </div>
               <button
                 type="submit" disabled={!googleAccount || authSubmitting}
-                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {authSubmitting ? "Checking code…" : "Submit for school approval"}
               </button>
@@ -481,11 +533,11 @@ function AuthModal({
 function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
   return (
     <div
-      className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
+      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
       role="dialog" aria-modal="true"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="ecw-body bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
+      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
         <span className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-3 ring-1 ring-amber-200">
           <Clock3 className="w-5 h-5 text-amber-600" />
         </span>
@@ -496,7 +548,7 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
         </p>
         <button
           type="button" onClick={onClose}
-          className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity bg-[rgb(22,32,111)]"
+          className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 active:scale-[0.98] transition-all bg-[rgb(22,32,111)]"
         >
           Got it
         </button>
@@ -525,11 +577,11 @@ function TeacherClassStepModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
+      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
       role="dialog" aria-modal="true"
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
+      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
         <div className="sticky top-0 bg-white flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
           <span className="w-11 h-11 shrink-0 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20">
             <GraduationCap className="w-5 h-5 text-[#178754]" aria-hidden="true" />
@@ -547,7 +599,7 @@ function TeacherClassStepModal({
 
         <div className="px-5 sm:px-6 py-5">
           {error && (
-            <div className="mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
+            <div className="ecw-fade-in mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
               {error}
             </div>
           )}
@@ -570,7 +622,7 @@ function TeacherClassStepModal({
               </div>
               <button
                 type="button" onClick={() => onPickExisting(assignments)}
-                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)]"
+                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]"
               >
                 Continue to dashboard
               </button>
@@ -658,7 +710,7 @@ function TeacherClassStepModal({
               <button
                 type="button" disabled={submitting || form.classIds.size === 0 || form.subjects.size === 0}
                 onClick={onSubmitAdd}
-                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {submitting
                   ? "Saving…"
@@ -680,7 +732,7 @@ function TeacherClassStepModal({
   );
 }
 
-export default function EasyClassWork() {
+export default function Home() {
   const navigate = useNavigate();
 
   const [isRegisterLoading, setIsRegisterLoading] = useState(false);
@@ -722,6 +774,7 @@ export default function EasyClassWork() {
 
   const isOverlayActive = isRegisterLoading || Boolean(authView) || Boolean(pendingApproval) || Boolean(teacherStep);
 
+  // Drives the animated checklist in the "connecting" overlay.
   useEffect(() => {
     if (!isRegisterLoading) { setLoadingStep(0); return; }
     const interval = setInterval(() => {
@@ -733,12 +786,18 @@ export default function EasyClassWork() {
     return () => clearInterval(interval);
   }, [isRegisterLoading]);
 
+  // Drives the hero browser-mockup carousel — crossfades through AD_SLIDES
+  // on a timer. Purely visual; see AD_SLIDES above.
   useEffect(() => {
     const interval = setInterval(() => {
-      setAdCarouselIndex((prev) => (prev + 1) % AD_CIRCLE_ICONS.length);
-    }, 2800);
+      setAdCarouselIndex((prev) => (prev + 1) % AD_SLIDES.length);
+    }, 3800);
     return () => clearInterval(interval);
   }, []);
+
+  // Drives the fill-in animation on the "live dashboard" stat rings once
+  // they scroll into view.
+  const [statsRef, statsVisible] = useReveal({ threshold: 0.4 });
 
   const handleNavigate = (path, state) => {
     setIsRegisterLoading(true);
@@ -1117,9 +1176,11 @@ export default function EasyClassWork() {
     }
   };
 
+  const activeSlide = AD_SLIDES[adCarouselIndex];
+
   return (
     <>
-      {/* Loading overlay — redesigned as an animated checklist instead of a bare spinner. */}
+      {/* Loading overlay — an animated checklist rather than a bare spinner. */}
       {isRegisterLoading && (
         <div className="ecw-magic-overlay" role="status" aria-live="polite">
           <div className="ecw-magic-card">
@@ -1197,41 +1258,54 @@ export default function EasyClassWork() {
     <div className={`min-h-screen bg-white text-neutral-900 font-sans antialiased ${isOverlayActive ? "ecw-blur-active" : ""}`}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Inter:wght@400;500;600&display=swap');
+
+        :root {
+          --ecw-green: #178754;
+          --ecw-green-dark: #136040;
+          --ecw-green-tint: #EAF6EF;
+          --ecw-navy: rgb(22,32,111);
+          --ecw-orange: #FF4500;
+        }
+
         .ecw-heading { font-family: 'Poppins', sans-serif; }
         .ecw-body { font-family: 'Inter', sans-serif; }
 
-        @keyframes ecw-walk {
-          0%   { transform: translateX(-6%); }
-          50%  { transform: translateX(96%); }
-          51%  { transform: translateX(96%) scaleX(-1); }
-          99%  { transform: translateX(-6%) scaleX(-1); }
-          100% { transform: translateX(-6%) scaleX(1); }
-        }
-        .ecw-walker { animation: ecw-walk 9s ease-in-out infinite; }
-        .ecw-walker2 { animation: ecw-walk 9s ease-in-out infinite; animation-delay: 1.2s; }
-        .ecw-walker3 { animation: ecw-walk 9s ease-in-out infinite; animation-delay: 2.4s; }
-
-        @keyframes ecw-float {
-          0%, 100% { transform: translateY(0px); }
-          50% { transform: translateY(-8px); }
-        }
-        .ecw-float { animation: ecw-float 4s ease-in-out infinite; }
-        .ecw-float-slow { animation: ecw-float 6s ease-in-out infinite; }
         @keyframes icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         .icon-spin { animation: icon-spin 3s linear infinite; }
 
+        /* ---------- scroll-in reveal: one pattern, used consistently ---------- */
+        .ecw-reveal {
+          opacity: 0;
+          transform: translateY(18px);
+          transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .ecw-reveal-visible { opacity: 1; transform: translateY(0); }
+
+        .ecw-fade-in { animation: ecw-fade-in 0.3s ease; }
+        @keyframes ecw-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+        /* ---------- modal entrance ---------- */
+        @keyframes ecw-backdrop-fade { from { opacity: 0; } to { opacity: 1; } }
+        .ecw-modal-backdrop { animation: ecw-backdrop-fade 0.2s ease; }
+        @keyframes ecw-modal-pop { from { opacity: 0; transform: translateY(14px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        .ecw-modal-pop { animation: ecw-modal-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        @keyframes ecw-dropdown-pop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+        .ecw-dropdown-pop { animation: ecw-dropdown-pop 0.15s ease; }
+
+        /* ---------- loading overlay ---------- */
         .ecw-blur-active { filter: blur(6px) saturate(0.9) brightness(0.9); transform-origin:center; }
         .ecw-magic-overlay {
           position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
-          background: rgba(6,10,30,0.65); z-index:9999;
+          background: rgba(6,10,30,0.65); z-index:9999; animation: ecw-backdrop-fade 0.2s ease;
         }
         .ecw-magic-card {
           width:300px; max-width:88%;
-          background: rgb(22,32,111);
+          background: var(--ecw-navy);
           border:1px solid rgba(255,255,255,0.1);
           padding:28px 26px; border-radius:18px;
           display:flex; flex-direction:column; align-items:center;
           box-shadow:0 20px 60px rgba(2,6,23,0.55);
+          animation: ecw-modal-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
         }
         .ecw-magic-title { color:#fff; font-weight:700; font-size:15px; letter-spacing:0.2px; }
         .ecw-progress-track {
@@ -1244,53 +1318,62 @@ export default function EasyClassWork() {
           transition: width 0.4s ease;
         }
 
-        .ecw-ad-panel {
-          position: absolute; top: -10%; left: 50%; transform: translateX(-50%);
-          height: min(100%, 13rem); width: min(100%, 13rem);
-          padding: 1.5rem 1.2rem; background: transparent;
-          border: 1px solid rgba(23,119,84,0.14); border-radius: 50%;
-          box-shadow: 0 18px 40px rgba(23,119,84,0.14);
-          backdrop-filter: blur(12px); z-index: 1;
-          display: flex; flex-direction: column; align-items: center; justify-content: center;
-          transition: width 0.2s ease, height 0.2s ease, padding 0.2s ease;
+        /* ---------- hero browser-window carousel ---------- */
+        .ecw-browser {
+          position: relative; border-radius: 16px; overflow: hidden;
+          background: #fff; border: 1px solid #E5E7EB;
+          box-shadow: 0 24px 60px -20px rgba(22,32,111,0.35);
         }
-        @media (max-width: 1024px) {
-          .ecw-ad-panel { top: 0.85rem; width: min(100%, 10rem); height: min(100%, 10rem); padding: 1rem 0.85rem; }
-          .ecw-ad-circle { width: 7.5rem; height: 7.5rem; }
+        .ecw-browser-bar {
+          display: flex; align-items: center; gap: 8px;
+          padding: 0.6rem 0.85rem; background: #F6F7FB; border-bottom: 1px solid #ECEEF5;
         }
-        @media (max-width: 768px) {
-          .ecw-ad-panel { top: 0.6rem; width: min(100%, 7.5rem); height: min(100%, 7.5rem); padding: 0.6rem 0.5rem; border-width: 1px; }
-          .ecw-ad-circle { width: 5.5rem; height: 5.5rem; border-width: 2px; }
-          .ecw-ad-panel-title { font-size: 0.55rem; margin-bottom: 0.5rem; }
+        .ecw-browser-dot { width: 8px; height: 8px; border-radius: 999px; background: #D8DCE8; }
+        .ecw-browser-url {
+          margin-left: 0.5rem; font-size: 10px; color: #8A90A6; font-family: 'Inter', sans-serif;
+          background: #fff; border: 1px solid #ECEEF5; border-radius: 999px; padding: 0.15rem 0.65rem;
+          flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        @media (max-width: 480px) {
-          .ecw-ad-panel { top: 0.4rem; width: min(100%, 5.75rem); height: min(100%, 5.75rem); padding: 0.4rem; }
-          .ecw-ad-circle { width: 4.25rem; height: 4.25rem; border-width: 2px; }
+        .ecw-browser-stage { position: relative; aspect-ratio: 16 / 10; overflow: hidden; }
+        .ecw-browser-slide {
+          position: absolute; inset: 0; opacity: 0; transform: scale(1.03);
+          transition: opacity 0.9s ease, transform 0.9s ease;
         }
-        .ecw-ad-circles { display: flex; justify-content: center; align-items: center; gap: 0; position: relative; width: 100%; height: 100%; }
-        .ecw-ad-circle {
-          width: 10rem; height: 10rem; border-radius: 50%; border: 3px solid #178754;
-          display: grid; place-items: center;
-          background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.95), rgba(228,252,239,0.85) 55%, rgba(255,255,255,0.65));
-          box-shadow: 0 14px 36px rgba(23,119,84,0.16);
-          animation: ecw-ad-pop 4s ease-in-out infinite; position: relative;
-          transition: width 0.2s ease, height 0.2s ease;
+        .ecw-browser-slide-active { opacity: 1; transform: scale(1); z-index: 2; }
+        .ecw-browser-caption {
+          position: absolute; left: 0.85rem; bottom: 0.85rem; right: 0.85rem;
+          display: flex; align-items: center; gap: 0.5rem;
+          background: rgba(255,255,255,0.94); backdrop-filter: blur(6px);
+          border-radius: 999px; padding: 0.5rem 0.85rem; box-shadow: 0 8px 20px rgba(2,6,23,0.12);
         }
-        .ecw-ad-button {
-          text-decoration: none; position: static; border-radius: 999px;
-          display: inline-flex; align-items: center; justify-content: center; color: white;
-          background: #178754; transition: all 0.3s ease; box-shadow: 0 4px 12px rgba(23,119,84,0.3);
-          margin-top: 0.75rem; width: 2.5rem; height: 2.5rem;
+        .ecw-badge-float {
+          position: absolute; top: -0.9rem; right: 1.4rem; z-index: 4;
+          width: 2.6rem; height: 2.6rem; border-radius: 999px; background: var(--ecw-orange);
+          display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 24px rgba(255,69,0,0.35);
+          animation: ecw-badge-bounce 3.4s ease-in-out infinite;
         }
-        .ecw-ad-button:hover { background: #136040; transform: scale(1.05); box-shadow: 0 6px 16px rgba(23,119,84,0.4); }
-        @media (max-width: 768px) { .ecw-ad-button { width: 1.9rem; height: 1.9rem; margin-top: 0.4rem; } .ecw-ad-button svg { width: 12px; height: 12px; } }
-        @media (max-width: 480px) { .ecw-ad-button { width: 1.6rem; height: 1.6rem; margin-top: 0.3rem; } .ecw-ad-button svg { width: 10px; height: 10px; } }
-        @keyframes ecw-ad-pop {
-          0%, 100% { transform: translateY(0) scale(1); }
-          20% { transform: translateY(-12px) scale(1.05); }
-          40% { transform: translateY(-6px) scale(0.98); }
-          60% { transform: translateY(-10px) scale(1.02); }
-          80% { transform: translateY(-4px) scale(0.99); }
+        @keyframes ecw-badge-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+        .ecw-hero-dots { display: flex; gap: 0.35rem; justify-content: center; margin-top: 0.9rem; }
+        .ecw-hero-dot { width: 6px; height: 6px; border-radius: 999px; background: #D8DCE8; transition: all 0.3s ease; }
+        .ecw-hero-dot-active { width: 20px; background: var(--ecw-green); }
+
+        /* ---------- partner marquee ---------- */
+        .ecw-marquee { overflow: hidden; -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); }
+        .ecw-marquee-track { display: flex; width: max-content; gap: 1.25rem; animation: ecw-marquee 26s linear infinite; }
+        @keyframes ecw-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+        .ecw-marquee:hover .ecw-marquee-track { animation-play-state: paused; }
+
+        /* ---------- team strip ---------- */
+        .ecw-team-strip { display: flex; gap: 1.1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 0.5rem; }
+        .ecw-team-card { scroll-snap-align: start; }
+        .ecw-team-strip::-webkit-scrollbar { height: 6px; }
+        .ecw-team-strip::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 999px; }
+
+        /* ---------- reduced motion ---------- */
+        @media (prefers-reduced-motion: reduce) {
+          .ecw-reveal { opacity: 1; transform: none; transition: none; }
+          .icon-spin, .ecw-browser-slide, .ecw-badge-float, .ecw-marquee-track { animation: none; transition: none; }
+          .ecw-browser-slide-active { opacity: 1; }
         }
       `}</style>
 
@@ -1352,24 +1435,25 @@ export default function EasyClassWork() {
         </div>
       </header>
 
-      {/* HERO */}
+      {/* HERO — headline + inline stat strip on the left, a live browser-window carousel on the right */}
       <section id="home" className="bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 pt-12 pb-14 flex flex-col lg:flex-row items-center gap-10">
-          <div className="flex flex-col items-start text-left w-full lg:w-1/2">
-            <span className="inline-block text-[11px] font-bold uppercase tracking-widest text-white bg-gradient-to-r from-[#FF4500] to-[#c93500] px-4 py-2 rounded mb-4 shadow-sm hover:shadow-md transition-shadow">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 pt-14 pb-16 grid lg:grid-cols-[1.05fr_1fr] gap-12 items-center">
+          <div className="flex flex-col items-start text-left">
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-white bg-gradient-to-r from-[#FF4500] to-[#c93500] px-4 py-2 rounded mb-5 shadow-sm">
               No more spending lot of time
             </span>
-            <h1 className="ecw-heading text-2xl sm:text-3xl font-extrabold leading-tight text-neutral-900 mb-3">
+            <h1 className="ecw-heading text-[2rem] sm:text-4xl font-extrabold leading-[1.12] text-neutral-900 mb-4">
               Easy way to manage students in the classroom
             </h1>
-            <p className="ecw-body text-sm text-neutral-600 leading-relaxed max-w-md">
+            <p className="ecw-body text-sm text-neutral-600 leading-relaxed max-w-md mb-7">
               Easy ClassWork Records gives every school a single system for teachers, students
               and administrators, built for the curriculum and designed for Rwanda.
             </p>
-            <div className="flex flex-wrap gap-3 pt-6">
+
+            <div className="flex flex-wrap gap-3 mb-9">
               <button
                 type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}
-                className="inline-flex items-center justify-center gap-2 text-[13px] font-bold text-white px-5 py-2.5 rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
+                className="inline-flex items-center justify-center gap-2 text-[13px] font-bold text-white px-5 py-2.5 rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
               >
                 {isRegisterLoading ? (
                   <>
@@ -1380,155 +1464,148 @@ export default function EasyClassWork() {
                   </>
                 ) : "Register your school"}
               </button>
-              <a href="#services" className="text-[13px] font-bold text-[rgb(22,32,111)] border border-[rgb(22,32,111)]/20 hover:bg-[rgb(22,32,111)]/5 px-5 py-2.5 rounded-lg transition-colors">
-                See what it does
+              <a href="#services" className="inline-flex items-center gap-1.5 text-[13px] font-bold text-[rgb(22,32,111)] border border-[rgb(22,32,111)]/20 hover:bg-[rgb(22,32,111)]/5 px-5 py-2.5 rounded-lg transition-colors">
+                See what it does <ArrowUpRight size={14} />
               </a>
             </div>
-          </div>
 
-          <div className="w-full lg:w-1/2">
-            <div className="relative bg-gradient-to-b from-[rgb(11,22,111)] to-[#EAF6EF] rounded-2xl p-6 overflow-hidden">
-              <span className="absolute top-5 right-8 text-[#6EE7A8] animate-[ecw-float_6s_ease-in-out_infinite]">
-                <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M4 15c3-4 6 4 9 0s6 4 7-1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-              </span>
-              <span className="absolute top-14 left-10 text-[#93C5FD] animate-[ecw-float_4s_ease-in-out_infinite]">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 15c3-4 6 4 9 0s6 4 7-1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
-              </span>
-
-              <div className="ecw-ad-panel relative">
-                <div className="ecw-ad-circles">
-                  <div className="ecw-ad-circle rounded-full w-full h-full overflow-hidden">
-                    <img src={trends} alt="ESMS logo" className="w-full rounded-full h-full" />
-                  </div>
+            {/* Inline stat strip, replacing the old separate donut section content on the hero */}
+            <div className="flex flex-wrap gap-x-8 gap-y-3 border-t border-neutral-100 pt-6 w-full">
+              {[
+                { value: "142+", label: "Partner schools" },
+                { value: "48,500+", label: "Active students" },
+                { value: "99.9%", label: "System uptime" },
+              ].map((s) => (
+                <div key={s.label}>
+                  <p className="ecw-heading text-lg font-extrabold text-neutral-900">{s.value}</p>
+                  <p className="ecw-body text-[11px] text-neutral-500">{s.label}</p>
                 </div>
-                <a href="#services" className="ecw-ad-button absolute right-0 bottom-6 translate-x-1/2 shadow-lg transition-transform hover:-translate-y-0.5 hover:shadow-xl">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <path d="M12 5v14M5 12h14" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  </svg>
-                </a>
-              </div>
-
-              <svg viewBox="0 0 480 220" className="w-full h-auto">
-                <g>
-                  <rect x="18" y="120" width="70" height="55" rx="3" fill="#DBEAFE" />
-                  <polygon points="15,120 53,95 91,120" fill="rgb(22,32,111)" />
-                  <rect x="45" y="145" width="16" height="30" fill="rgb(22,32,111)" />
-                  <rect x="26" y="132" width="12" height="12" fill="#93C5FD" />
-                  <rect x="68" y="132" width="12" height="12" fill="#93C5FD" />
-                </g>
-                <g>
-                  <line x1="53" y1="95" x2="53" y2="60" stroke="#C7D2FE" strokeWidth="2" />
-                  <g className="ecw-float">
-                    <rect x="53" y="60" width="34" height="8" fill="#20A5DE" />
-                    <rect x="53" y="68" width="34" height="8" fill="#FAD201" />
-                    <rect x="53" y="76" width="34" height="6" fill="#178754" />
-                    <circle cx="76" cy="66" r="3.2" fill="#E5BE01" />
-                  </g>
-                </g>
-                <path d="M95 175 Q 240 110 385 175" stroke="#178754" strokeWidth="6" fill="none" strokeLinecap="round" />
-                <path d="M95 175 Q 240 130 385 175" stroke="#A7F3D0" strokeWidth="14" fill="none" strokeLinecap="round" opacity="0.6" />
-                <g>
-                  <rect x="392" y="140" width="66" height="42" rx="4" fill="#178754" />
-                  <rect x="398" y="146" width="54" height="30" rx="2" fill="#ECFDF5" />
-                  <rect x="386" y="182" width="78" height="7" rx="2" fill="#0F6B41" />
-                </g>
-                <g className="ecw-walker">
-                  <circle cx="0" cy="150" r="7" fill="rgb(22,32,111)" />
-                  <rect x="-4" y="157" width="8" height="14" rx="3" fill="rgb(22,32,111)" />
-                </g>
-                <g className="ecw-walker2">
-                  <circle cx="0" cy="150" r="6" fill="#178754" />
-                  <rect x="-3.5" y="156" width="7" height="12" rx="3" fill="#178754" />
-                </g>
-                <g className="ecw-walker3">
-                  <circle cx="0" cy="150" r="6.5" fill="#FAD201" />
-                  <rect x="-4" y="156.5" width="8" height="13" rx="3" fill="#FAD201" />
-                </g>
-              </svg>
-              <p className="text-center text-[0.9rem] text-[#178737] ecw-body -mt-1">
-                Teacher no longer takes time to pass through papers
-              </p>
+              ))}
             </div>
           </div>
-        </div>
-      </section>
 
-      {/* OUR SERVICES */}
-      <section id="services" className="bg-white py-14">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our services</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              Everything a school needs to run its academic year
-            </h2>
-          </div>
-          <div className="flex flex-wrap gap-5">
-            {[
-              { icon: BookOpen, bg: "#E6F1FB", tint: "#1D6FE0", title: "Class notes", text: "Teachers publish notes by subject and class, students open them anytime." },
-              { icon: ClipboardCheck, bg: "#EAF6EF", tint: "#178754", title: "Quizzes", text: "Auto-graded assessments aligned with the competence-based curriculum." },
-              { icon: GraduationCap, bg: "#E6F1FB", tint: "#1D6FE0", title: "Gradebook", text: "Record marks once, and let report cards build themselves." },
-              { icon: CalendarCheck, bg: "#EAF6EF", tint: "#178754", title: "Attendance", text: "Mark attendance from a phone or a laptop in under a minute." },
-              { icon: FileText, bg: "#E6F1FB", tint: "#1D6FE0", title: "Term reports", text: "Generate report cards for a class, or the whole school, in one click." },
-              { icon: Wallet, bg: "#EAF6EF", tint: "#178754", title: "Fees and payments", text: "Accept MTN Mobile Money, Airtel Money and bank transfers." },
-            ].map(({ icon: Icon, bg, tint, title, text }) => (
-              <div key={title} className="flex flex-col bg-white rounded-xl p-5 border border-neutral-100 hover:border-green-200 transition-colors w-full sm:w-[47%] lg:w-[31%]">
-                <span className="inline-flex w-9 h-9 rounded-lg items-center justify-center mb-3" style={{ background: bg }}>
-                  <Icon className="w-5 h-5 icon-spin" style={{ color: tint }} aria-hidden="true" />
-                </span>
-                <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">{title}</h3>
-                <p className="ecw-body text-xs text-neutral-600 leading-relaxed">{text}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* HOW TO GET STARTED */}
-      <section id="how-it-works" className="py-14 border-y border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">How to get started</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              Six steps, and your school is online
-            </h2>
-          </div>
           <div className="relative">
-            <div className="hidden sm:block absolute left-8 top-6 bottom-6 w-0.5 bg-[#178754] opacity-80 rounded" />
-            <div className="flex flex-col gap-6">
-              {[
-                { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details and phone number." },
-                { i: 2, title: "Get approved", text: "Our team calls you to confirm payment, approves your school, and emails you your school code." },
-                { i: 3, title: "Add staff and students", text: "Teachers and students sign up with Google using your school code." },
-                { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords to manage or forget." },
-                { i: 5, title: "Publish notes and quizzes", text: "Teachers start uploading materials the same day." },
-                { i: 6, title: "Track progress", text: "Watch attendance, grades and quiz results as the term goes on." },
-              ].map((step) => (
-                <div key={step.i} className="relative flex flex-col sm:block sm:pl-14">
-                  <div className="flex items-center gap-3 sm:hidden">
-                    <div className="w-9 h-9 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
-                    <div>
-                      <h3 className="ecw-heading font-bold text-sm text-neutral-900">{step.title}</h3>
-                      <p className="ecw-body text-xs text-neutral-600 mt-1">{step.text}</p>
+            <div className="ecw-badge-float">
+              {(() => { const Icon = activeSlide.icon; return <Icon size={16} color="white" />; })()}
+            </div>
+            <div className="ecw-browser">
+              <div className="ecw-browser-bar">
+                <span className="ecw-browser-dot" /><span className="ecw-browser-dot" /><span className="ecw-browser-dot" />
+                <span className="ecw-browser-url">app.easyclasswork.rw{activeSlide.path.replace("·", "")}</span>
+              </div>
+              <div className="ecw-browser-stage">
+                {AD_SLIDES.map((slide, i) => {
+                  const active = i === adCarouselIndex;
+                  return (
+                    <div key={slide.caption} className={`ecw-browser-slide ${active ? "ecw-browser-slide-active" : ""}`} aria-hidden={!active}>
+                      <img src={slide.image} alt={slide.caption} className="w-full h-full object-cover" />
                     </div>
-                  </div>
-                  <div className="hidden sm:block absolute left-0 sm:left-6 top-0">
-                    <div className="w-10 h-10 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
-                  </div>
-                  <div className="ml-0 sm:ml-12 bg-white p-4 sm:p-0 rounded-md hidden sm:block">
-                    <h3 className="ecw-heading font-bold text-sm text-neutral-900">{step.title}</h3>
-                    <p className="ecw-body text-xs text-neutral-600 mt-1">{step.text}</p>
-                  </div>
+                  );
+                })}
+                <div className="ecw-browser-caption">
+                  {(() => { const Icon = activeSlide.icon; return <Icon size={14} className="text-[#178754] shrink-0" />; })()}
+                  <span className="ecw-body text-[11px] font-bold text-neutral-800 truncate">{activeSlide.caption}</span>
                 </div>
+              </div>
+            </div>
+            <div className="ecw-hero-dots">
+              {AD_SLIDES.map((slide, i) => (
+                <span key={slide.caption} className={`ecw-hero-dot ${i === adCarouselIndex ? "ecw-hero-dot-active" : ""}`} />
               ))}
             </div>
           </div>
         </div>
       </section>
 
-      {/* REGISTER / DASHBOARDS */}
-      <section id="register" className="py-14 bg-white">
+      {/* OUR SERVICES — bento-style list instead of a uniform card grid */}
+      <section id="services" className="bg-white py-16 border-t border-neutral-100">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-10">
+          <Reveal className="max-w-xl mb-10">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our services</span>
+            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
+              Everything a school needs to run its academic year
+            </h2>
+          </Reveal>
+          <div className="grid sm:grid-cols-2 border-t border-l border-neutral-100">
+            {[
+              { icon: BookOpen, tint: "#1D6FE0", title: "Class notes", text: "Teachers publish notes by subject and class, students open them anytime." },
+              { icon: ClipboardCheck, tint: "#178754", title: "Quizzes", text: "Auto-graded assessments aligned with the competence-based curriculum." },
+              { icon: GraduationCap, tint: "#1D6FE0", title: "Gradebook", text: "Record marks once, and let report cards build themselves." },
+              { icon: CalendarCheck, tint: "#178754", title: "Attendance", text: "Mark attendance from a phone or a laptop in under a minute." },
+              { icon: FileText, tint: "#1D6FE0", title: "Term reports", text: "Generate report cards for a class, or the whole school, in one click." },
+              { icon: Wallet, tint: "#178754", title: "Fees and payments", text: "Accept MTN Mobile Money, Airtel Money and bank transfers." },
+            ].map(({ icon: Icon, tint, title, text }, idx) => (
+              <div
+                key={title}
+                className="group relative flex items-start gap-4 p-6 border-r border-b border-neutral-100 hover:bg-neutral-50/70 transition-colors duration-300"
+              >
+                <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-transparent group-hover:bg-[--tint] transition-colors" style={{ "--tint": tint }} />
+                <Icon className="w-5 h-5 mt-0.5 shrink-0 transition-transform duration-300 group-hover:scale-110" style={{ color: tint }} aria-hidden="true" />
+                <div>
+                  <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">{title}</h3>
+                  <p className="ecw-body text-xs text-neutral-600 leading-relaxed">{text}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* HOW TO GET STARTED — horizontal connected stepper on desktop, stacked on mobile */}
+      <section id="how-it-works" className="py-16 bg-neutral-50 border-y border-neutral-100">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8">
+          <Reveal className="max-w-xl mb-12">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">How to get started</span>
+            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
+              Six steps, and your school is online
+            </h2>
+          </Reveal>
+
+          <div className="hidden lg:grid grid-cols-6 gap-4 relative">
+            <div className="absolute top-5 left-[8.3%] right-[8.3%] h-0.5 bg-[#178754]/25" />
+            {[
+              { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details." },
+              { i: 2, title: "Get approved", text: "We confirm payment, approve your school, and email your school code." },
+              { i: 3, title: "Add staff & students", text: "They sign up with Google using your school code." },
+              { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords." },
+              { i: 5, title: "Publish materials", text: "Teachers start uploading notes and quizzes the same day." },
+              { i: 6, title: "Track progress", text: "Watch attendance, grades and quiz results all term." },
+            ].map((step) => (
+              <div key={step.i} className="relative flex flex-col items-start">
+                <div className="relative z-10 w-10 h-10 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow mb-3">
+                  {step.i}
+                </div>
+                <h3 className="ecw-heading font-bold text-xs text-neutral-900 mb-1">{step.title}</h3>
+                <p className="ecw-body text-[11px] text-neutral-600 leading-relaxed">{step.text}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="lg:hidden flex flex-col gap-5">
+            {[
+              { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details and phone number." },
+              { i: 2, title: "Get approved", text: "Our team calls you to confirm payment, approves your school, and emails you your school code." },
+              { i: 3, title: "Add staff and students", text: "Teachers and students sign up with Google using your school code." },
+              { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords to manage or forget." },
+              { i: 5, title: "Publish notes and quizzes", text: "Teachers start uploading materials the same day." },
+              { i: 6, title: "Track progress", text: "Watch attendance, grades and quiz results as the term goes on." },
+            ].map((step) => (
+              <div key={step.i} className="flex items-start gap-3 bg-white rounded-xl border border-neutral-100 p-4">
+                <div className="w-9 h-9 shrink-0 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
+                <div>
+                  <h3 className="ecw-heading font-bold text-sm text-neutral-900">{step.title}</h3>
+                  <p className="ecw-body text-xs text-neutral-600 mt-1">{step.text}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* REGISTER / DASHBOARDS — list-style role rows instead of a card grid */}
+      <section id="register" className="py-16 bg-white">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8">
+          <Reveal className="max-w-xl mb-10">
             <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "#FF4500" }}>Register</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Choose your dashboard</h2>
             <p className="ecw-body text-xs text-neutral-600 mt-2">
@@ -1536,26 +1613,28 @@ export default function EasyClassWork() {
               class and subject they teach at sign-in. School admins sign in with the same Google account
               they registered their school with, once the school has been approved.
             </p>
-          </div>
+          </Reveal>
 
-          <div className="flex flex-wrap gap-5 mb-8">
+          <div className="flex flex-col divide-y divide-neutral-100 border-y border-neutral-100 mb-10">
             {[
-              { role: "student", bg: "#EAF6EF", tint: "#178754", title: "Student dashboard", text: "Read class notes, take quizzes and check your report card, signed in with Google." },
-              { role: "teacher", bg: "#E6F1FB", tint: "#1D6FE0", title: "Teacher dashboard", text: "Upload lesson materials, grade work and record attendance — choose every class and subject you teach when you sign in with Google." },
-              { role: "schoolAdmin", bg: "#EAF6EF", tint: "#178754", title: "School admin", text: "Manage staff accounts, student codes and fees for your own school — sign in with the Google account you registered with." },
-              { role: "superAdmin", bg: "#E6F1FB", tint: "#1D6FE0", title: "Super admin", text: "Oversee every school on the platform — sign in with the authorized Google account." },
-            ].map(({ role, bg, tint, title, text }) => {
+              { role: "student", tint: "#178754", title: "Student dashboard", text: "Read class notes, take quizzes and check your report card, signed in with Google." },
+              { role: "teacher", tint: "#1D6FE0", title: "Teacher dashboard", text: "Upload lesson materials, grade work and record attendance — choose every class and subject you teach when you sign in with Google." },
+              { role: "schoolAdmin", tint: "#178754", title: "School admin", text: "Manage staff accounts, student codes and fees for your own school — sign in with the Google account you registered with." },
+              { role: "superAdmin", tint: "#1D6FE0", title: "Super admin", text: "Oversee every school on the platform — sign in with the authorized Google account." },
+            ].map(({ role, tint, title, text }) => {
               const RoleIcon = ROLE_CONFIG[role].icon;
               return (
-                <div key={role} className="flex flex-col bg-white rounded-xl p-5 border border-neutral-100 w-full sm:w-[47%] lg:w-[23%]">
-                  <span className="inline-flex w-9 h-9 rounded-lg items-center justify-center mb-3" style={{ background: bg }}>
+                <div key={role} className="group flex flex-col sm:flex-row sm:items-center gap-4 py-6">
+                  <span className="inline-flex w-11 h-11 shrink-0 rounded-xl items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: `${tint}14` }}>
                     <RoleIcon className="w-5 h-5" style={{ color: tint }} aria-hidden="true" />
                   </span>
-                  <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">{title}</h3>
-                  <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-4">{text}</p>
+                  <div className="flex-1">
+                    <h3 className="ecw-heading font-bold text-sm text-neutral-900">{title}</h3>
+                    <p className="ecw-body text-xs text-neutral-600 leading-relaxed mt-0.5 max-w-xl">{text}</p>
+                  </div>
                   <button
                     type="button" onClick={() => openAuth(role, "login")}
-                    className="w-full py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] mt-auto"
+                    className="shrink-0 py-2.5 px-5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]"
                   >
                     Sign in as {ROLE_CONFIG[role].label.toLowerCase()}
                   </button>
@@ -1573,7 +1652,7 @@ export default function EasyClassWork() {
               </div>
               <button
                 type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}
-                className="whitespace-nowrap inline-flex items-center justify-center gap-2 py-2.5 px-5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
+                className="whitespace-nowrap inline-flex items-center justify-center gap-2 py-2.5 px-5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
               >
                 {isRegisterLoading ? "Loading..." : "Register my school"}
               </button>
@@ -1597,14 +1676,14 @@ export default function EasyClassWork() {
       </section>
 
       {/* DASHBOARD */}
-      <section id="dashboard" className="py-14 bg-neutral-50 border-y border-neutral-100">
+      <section id="dashboard" className="py-16 bg-neutral-50 border-y border-neutral-100">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-8">
+          <Reveal className="max-w-xl mb-8">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Live dashboard</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
               See the school's whole term at a glance
             </h2>
-          </div>
+          </Reveal>
 
           <div className="rounded-2xl border border-neutral-200 overflow-hidden bg-white shadow-sm">
             <div className="bg-neutral-50 px-4 py-2.5 flex items-center gap-1.5 border-b border-neutral-200">
@@ -1618,44 +1697,51 @@ export default function EasyClassWork() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-5 mt-8">
+          <div ref={statsRef} className="flex flex-wrap gap-5 mt-8">
             {[
               { pct: 71, color: "rgb(22,32,111)", value: "142+", label: "Partner schools" },
               { pct: 85, color: "#178754", value: "48,500+", label: "Active students" },
               { pct: 98, color: "rgb(22,32,111)", value: "98%", label: "Teacher approval" },
               { pct: 99, color: "#178754", value: "99.9%", label: "System uptime" },
-            ].map(({ pct, color, value, label }) => (
-              <div key={label} className="flex flex-col items-center text-center flex-1 min-w-[120px]">
-                <svg width="76" height="76" viewBox="0 0 76 76">
-                  <circle cx="38" cy="38" r="30" fill="none" stroke="#E5F0FF" strokeWidth="7" />
-                  <circle cx="38" cy="38" r="30" fill="none" stroke={color} strokeWidth="7" strokeLinecap="round"
-                    strokeDasharray="188.5" strokeDashoffset={188.5 - (188.5 * pct) / 100} transform="rotate(-90 38 38)" />
-                </svg>
-                <p className="ecw-heading text-sm font-extrabold text-neutral-900 mt-2">{value}</p>
-                <p className="ecw-body text-[11px] text-neutral-500">{label}</p>
-              </div>
-            ))}
+            ].map(({ pct, color, value, label }) => {
+              const shownPct = statsVisible ? pct : 0;
+              return (
+                <div key={label} className="flex flex-col items-center text-center flex-1 min-w-[120px]">
+                  <svg width="76" height="76" viewBox="0 0 76 76">
+                    <circle cx="38" cy="38" r="30" fill="none" stroke="#E5F0FF" strokeWidth="7" />
+                    <circle
+                      cx="38" cy="38" r="30" fill="none" stroke={color} strokeWidth="7" strokeLinecap="round"
+                      strokeDasharray="188.5" strokeDashoffset={188.5 - (188.5 * shownPct) / 100}
+                      transform="rotate(-90 38 38)"
+                      style={{ transition: "stroke-dashoffset 1.1s cubic-bezier(0.16, 1, 0.3, 1)" }}
+                    />
+                  </svg>
+                  <p className="ecw-heading text-sm font-extrabold text-neutral-900 mt-2">{value}</p>
+                  <p className="ecw-body text-[11px] text-neutral-500">{label}</p>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
 
-      {/* OUR TEAM */}
-      <section id="team" className="py-14 bg-white">
+      {/* OUR TEAM — horizontal scrolling strip instead of a static grid */}
+      <section id="team" className="py-16 bg-white">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-10">
+          <Reveal className="max-w-xl mb-10">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our team</span>
-            <h2 className="ecw-heading text-1xl font-extrabold text-neutral-900 mt-2">
+            <h2 className="ecw-heading text-xl font-extrabold text-neutral-900 mt-2">
               The people who built ESMS
             </h2>
-          </div>
-          <div className="flex flex-wrap justify-center gap-6">
+          </Reveal>
+          <div className="ecw-team-strip">
             {[
               { name: "Erneste Itangishaka", role: "Founder and lead engineer", image: ceo, ring: "ring-emerald-100", tint: "#178754" },
               { name: "Aline Umurerwa", role: "Product designer", image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
               { name: "Mukunzi Joseph", role: "Backend Developer", image: mukunzi, ring: "ring-emerald-100", tint: "#178754" },
               { name: "Mutangana Justin", role: "Curriculum lead", image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
             ].map((m) => (
-              <div key={m.name} className="flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-full sm:w-[45%] lg:w-[22%]">
+              <div key={m.name} className="ecw-team-card flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-56 shrink-0">
                 <span className={`w-24 h-24 rounded-full bg-white flex items-center justify-center mx-auto mb-4 ring-4 ${m.ring} shadow-sm`}>
                   <img src={m.image} alt={`${m.name} portrait`} className="w-full h-full rounded-full object-cover" />
                 </span>
@@ -1667,48 +1753,24 @@ export default function EasyClassWork() {
         </div>
       </section>
 
-      {/* TESTIMONIALS */}
-      <section className="py-14 bg-neutral-50 border-y border-neutral-100">
+      {/* TESTIMONIALS — editorial quote cards with an accent rail */}
+      <section className="py-16 bg-neutral-50 border-y border-neutral-100">
         <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <div className="max-w-xl mb-10">
+          <Reveal className="max-w-xl mb-10">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">In their words</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Teachers who use it every day</h2>
-          </div>
-          <div className="flex flex-wrap gap-5">
+          </Reveal>
+          <div className="flex flex-col gap-4">
             {[
               { quote: "I used to spend a whole weekend marking. Now the quizzes grade themselves and I mark the harder work by hand.", name: "Abayo Albertine", role: "Geo Teacher, LFHS", tint: "#178754" },
               { quote: "Report cards that took two weeks at the end of term now take an afternoon.", name: "Dushime Benjamin", role: "Head teacher, GS Nyamirambo", tint: "rgb(22,32,111)" },
               { quote: "My students open the notes from their phones on the bus home, and that changed how much they read.", name: "Shyaka Jules", role: "Math Teacher, GS Rubona", tint: "#178754" },
             ].map((t) => (
-              <div key={t.name} className="flex flex-col bg-white rounded-xl p-5 border border-neutral-100 w-full md:w-[31%]">
-                <UserCircle2 className="w-12 h-12 mb-3" style={{ color: t.tint }} aria-hidden="true" />
-                <p className="ecw-body text-xs text-neutral-700 leading-relaxed mb-4">"{t.quote}"</p>
-                <p className="ecw-heading text-xs font-bold text-neutral-900">{t.name}</p>
-                <p className="ecw-body text-[11px] text-neutral-500">{t.role}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* PARTNERS */}
-      <section id="partners" className="py-14 bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400 text-center mb-8">Our partners</p>
-          <div className="flex flex-wrap gap-5">
-            {[
-              { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
-              { image: reb, name: "REB", sub: "Basic Education Board" },
-              { image: nesa, name: "NESA", sub: "National Examination" },
-              { image: asyv, name: "ASYV", sub: "System supporter" },
-            ].map(({ image, name, sub }) => (
-              <div key={name} className="flex items-center gap-3 bg-neutral-50 rounded-xl p-4 border border-neutral-100 flex-1 min-w-[220px]">
-                <span className="w-11 h-11 rounded-full bg-white flex items-center justify-center shrink-0 overflow-hidden">
-                  <img src={image} alt={`${name} logo`} className="w-full h-full object-contain" />
-                </span>
+              <div key={t.name} className="flex items-start gap-4 bg-white rounded-xl p-5 border-l-4 hover:shadow-md transition-shadow duration-300" style={{ borderColor: t.tint }}>
+                <Quote className="w-7 h-7 shrink-0 mt-0.5 opacity-30" style={{ color: t.tint }} aria-hidden="true" />
                 <div>
-                  <p className="ecw-heading font-bold text-xs text-neutral-900">{name}</p>
-                  <p className="ecw-body text-[10px] text-neutral-500">{sub}</p>
+                  <p className="ecw-body text-xs text-neutral-700 leading-relaxed mb-3">{t.quote}</p>
+                  <p className="ecw-heading text-xs font-bold text-neutral-900">{t.name} <span className="ecw-body font-normal text-neutral-400">· {t.role}</span></p>
                 </div>
               </div>
             ))}
@@ -1716,10 +1778,42 @@ export default function EasyClassWork() {
         </div>
       </section>
 
+      {/* PARTNERS — continuous marquee instead of a static row */}
+      <section id="partners" className="py-14 bg-white">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400 text-center mb-8">Our partners</p>
+          <div className="ecw-marquee">
+            <div className="ecw-marquee-track">
+              {[...[
+                { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
+                { image: reb, name: "REB", sub: "Basic Education Board" },
+                { image: nesa, name: "NESA", sub: "National Examination" },
+                { image: asyv, name: "ASYV", sub: "System supporter" },
+              ], ...[
+                { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
+                { image: reb, name: "REB", sub: "Basic Education Board" },
+                { image: nesa, name: "NESA", sub: "National Examination" },
+                { image: asyv, name: "ASYV", sub: "System supporter" },
+              ]].map(({ image, name, sub }, idx) => (
+                <div key={`${name}-${idx}`} className="flex items-center gap-3 bg-neutral-50 rounded-xl p-4 border border-neutral-100 w-72 shrink-0">
+                  <span className="w-11 h-11 rounded-full bg-white flex items-center justify-center shrink-0 overflow-hidden">
+                    <img src={image} alt={`${name} logo`} className="w-full h-full object-contain" />
+                  </span>
+                  <div>
+                    <p className="ecw-heading font-bold text-xs text-neutral-900">{name}</p>
+                    <p className="ecw-body text-[10px] text-neutral-500">{sub}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* CONTACT */}
-      <section id="contact" className="py-14 bg-neutral-50 border-y border-neutral-100">
+      <section id="contact" className="py-16 bg-neutral-50 border-y border-neutral-100">
         <div className="max-w-6xl mx-auto px-5 sm:px-8 flex flex-wrap gap-10 items-center">
-          <div className="flex-1 min-w-[260px]">
+          <Reveal className="flex-1 min-w-[260px]">
             <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Contact</span>
             <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2 mb-3">Talk to us before you sign up</h2>
             <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-5">
@@ -1731,13 +1825,13 @@ export default function EasyClassWork() {
               <p>+250 788 000 000</p>
               <p>Kigali, Rwanda</p>
             </div>
-          </div>
+          </Reveal>
           <div className="flex-1 min-w-[260px] bg-white rounded-xl p-6 border border-neutral-100">
             <div className="flex flex-col gap-3">
-              <input type="text" placeholder="Full name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400" />
-              <input type="text" placeholder="School name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400" />
-              <textarea placeholder="How can we help?" rows="3" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"></textarea>
-              <button type="button" className="w-full py-2.5 text-white font-bold text-xs rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)]">
+              <input type="text" placeholder="Full name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors" />
+              <input type="text" placeholder="School name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors" />
+              <textarea placeholder="How can we help?" rows="3" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors"></textarea>
+              <button type="button" className="w-full py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]">
                 Send message
               </button>
             </div>
