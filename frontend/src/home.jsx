@@ -9,6 +9,8 @@ import minedic from './assets/minedic.jpg';
 import asyv from './assets/asyv.webp';
 import ceo from './assets/ceo.jpg';
 import mukunzi from './assets/muk.png';
+import minister from './assets/minister.jpg';
+import milker from './assets/milker.jpg';
 import {
   BookOpen,
   ClipboardCheck,
@@ -112,9 +114,9 @@ const DEFAULT_SCHOOL_CODE = "ECR-123456";
 // Rotating screenshots shown inside the hero's browser-window mockup. Purely
 // presentational — nothing here talks to the server.
 const AD_SLIDES = [
-  { image: trends, icon: TrendingUp, caption: "Pass rates trending up, term over term", path: "/dashboard · trends" },
+  { image: minister, icon: Landmark, caption: "Supporting Rwanda's education vision", path: "/dashboard · partnerships" },
   { image: dashboard, icon: LayoutDashboard, caption: "One dashboard for the whole school", path: "/dashboard · overview" },
-  { image: esms, icon: ShieldCheck, caption: "142+ verified schools, one system", path: "/dashboard · schools" },
+  { image: milker, icon: School, caption: "Making school management simpler", path: "/dashboard · schools" },
 ];
 
 // Every subject a teacher can pick from when choosing what they teach.
