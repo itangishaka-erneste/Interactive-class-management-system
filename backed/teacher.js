@@ -37,6 +37,10 @@
    ============================================================================ */
 
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
+const multer = require("multer");
 const pool = require("./db");
 const cls = require("./classroom");
 
@@ -62,6 +66,57 @@ router.use(cls.requireMember("teacher"));
 // Safe/idempotent to run on every boot; student.js runs the same statement
 // so whichever router loads first wins and the other is a no-op.
 pool.query("ALTER TABLE ecw_members ADD COLUMN IF NOT EXISTS profile_image TEXT").catch(() => {});
+
+/* ---------------------------------- uploads ----------------------------------
+   NEW (attach real files to notes): the note editor used to only accept a
+   pasted web address for an attachment. This lets a teacher pick a file
+   straight off their computer -- image, video or PDF -- and get back a URL
+   that behaves exactly like one they'd have pasted in, so it slots into the
+   existing fileUrl/fileType/fileName fields on ecw_notes without any other
+   change to how notes are stored or shown to students.
+   Needs the "multer" package (npm install multer) alongside the others this
+   project already depends on.
+--------------------------------------------------------------------------- */
+
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const ALLOWED_UPLOAD_TYPES = {
+  "image/png": "image", "image/jpeg": "image", "image/gif": "image", "image/webp": "image",
+  "video/mp4": "video", "video/webm": "video", "video/ogg": "video", "video/quicktime": "video",
+  "application/pdf": "file",
+};
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname).slice(0, 10);
+      cb(null, `${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`);
+    },
+  }),
+  limits: { fileSize: 40 * 1024 * 1024 }, // 40MB -- generous enough for a short clip or a scanned PDF
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_UPLOAD_TYPES[file.mimetype]) return cb(httpError(400, "Only images, videos and PDF files can be attached."));
+    cb(null, true);
+  },
+});
+
+router.post(
+  "/upload",
+  (req, res, next) => upload.single("file")(req, res, (err) => {
+    if (err) return cls.sendError(res, err.status || 400, err.message || "That file could not be uploaded.");
+    next();
+  }),
+  wrap(async (req, res) => {
+    if (!req.file) throw httpError(400, "Choose a file to upload.");
+    const kind = ALLOWED_UPLOAD_TYPES[req.file.mimetype] || "file";
+    res.status(201).json({
+      success: true,
+      file: { url: `/uploads/${req.file.filename}`, type: kind, name: req.file.originalname },
+    });
+  })
+);
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -824,6 +879,233 @@ router.get(
         quizzesDone: s.quizzes_done,
         averageScore: s.average_score,
         profileImage: s.profile_image || "",
+      })),
+    });
+  })
+);
+
+/* ------------------------------------ game (Kahoot-style codes) --------------
+   NEW: a teacher turns a published quiz into a short join code. Students in
+   the class enter the code (POST /api/student/game/join, in student.js)
+   instead of finding the quiz in their own list; joining reuses the exact
+   same attempt/scoring flow as starting a quiz normally, so nothing about
+   how a quiz is taken, marked or reviewed changes -- this only adds a second
+   way in. The small live panel on the teacher's screen (players joined /
+   class size) is driven by the "quiz:studentStarted" realtime event the
+   normal start flow already emits, plus the game:opened/closed events below.
+------------------------------------------------------------------------------- */
+
+const GAME_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I -- easier to read out loud/on a projector
+
+async function createUniqueGameCode() {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let code = "";
+    for (let i = 0; i < 6; i++) code += GAME_CODE_CHARS[Math.floor(Math.random() * GAME_CODE_CHARS.length)];
+    const exists = await pool.query("SELECT 1 FROM ecw_quiz_game_codes WHERE code = $1 AND active", [code]);
+    if (exists.rowCount === 0) return code;
+  }
+  throw httpError(500, "Could not generate a unique code. Please try again.");
+}
+
+router.post(
+  "/quizzes/:id/game/start",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "quiz");
+    const quiz = await getQuiz(id, m.id); // ownership check
+    if (quiz.status !== "published") throw httpError(400, "Publish the quiz before generating a game code.");
+
+    await pool.query("UPDATE ecw_quiz_game_codes SET active = FALSE, closed_at = NOW() WHERE quiz_id = $1 AND active", [id]);
+    const code = await createUniqueGameCode();
+    const ins = await pool.query(
+      "INSERT INTO ecw_quiz_game_codes (quiz_id, code) VALUES ($1, $2) RETURNING id, code, created_at",
+      [id, code]
+    );
+    const game = ins.rows[0];
+    try { emit(rooms.class(quiz.classId), "game:opened", { quizId: id, quizTitle: quiz.title, code: game.code }); } catch { /* realtime is best-effort */ }
+    res.status(201).json({ success: true, game: { id: game.id, code: game.code, createdAt: game.created_at, playerCount: 0 } });
+  })
+);
+
+router.post(
+  "/quizzes/:id/game/stop",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "quiz");
+    const quiz = await getQuiz(id, m.id);
+    const r = await pool.query("UPDATE ecw_quiz_game_codes SET active = FALSE, closed_at = NOW() WHERE quiz_id = $1 AND active RETURNING id", [id]);
+    if (r.rowCount > 0) {
+      try { emit(rooms.class(quiz.classId), "game:closed", { quizId: id }); } catch { /* realtime is best-effort */ }
+    }
+    res.json({ success: true });
+  })
+);
+
+router.get(
+  "/quizzes/:id/game",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "quiz");
+    const quiz = await getQuiz(id, m.id);
+    const g = await pool.query("SELECT * FROM ecw_quiz_game_codes WHERE quiz_id = $1 AND active ORDER BY created_at DESC LIMIT 1", [id]);
+    if (g.rowCount === 0) return res.json({ success: true, game: null });
+    const game = g.rows[0];
+    const [players, classSize] = await Promise.all([
+      pool.query(
+        `SELECT s.id, s.full_name, s.profile_image, p.joined_at
+         FROM ecw_quiz_game_players p JOIN ecw_members s ON s.id = p.student_id
+         WHERE p.game_code_id = $1 ORDER BY p.joined_at`,
+        [game.id]
+      ),
+      pool.query("SELECT COUNT(*)::int AS n FROM ecw_members WHERE role = 'student' AND class_id = $1", [quiz.classId]),
+    ]);
+    res.json({
+      success: true,
+      game: {
+        id: game.id,
+        code: game.code,
+        createdAt: game.created_at,
+        classSize: classSize.rows[0].n,
+        players: players.rows.map((p) => ({ id: p.id, fullName: p.full_name, profileImage: p.profile_image || "", joinedAt: p.joined_at })),
+      },
+    });
+  })
+);
+
+/* ------------------------------- class teacher --------------------------------
+   NEW: if the school admin made this teacher the CLASS TEACHER for one of
+   their classes (see POST /classes/:id/class-teacher in School_admin.js),
+   these routes give them a whole-class, all-subjects report -- every quiz
+   ANY teacher ran in that class, not just their own -- for the class
+   dashboard graphs and for a printable per-student report.
+------------------------------------------------------------------------------- */
+
+router.get(
+  "/class-teacher",
+  wrap(async (req, res) => {
+    const r = await pool.query(
+      `SELECT ct.class_id, c.name AS class_name FROM ecw_class_teachers ct
+       JOIN ecw_classes c ON c.id = ct.class_id WHERE ct.teacher_id = $1`,
+      [req.member.id]
+    );
+    if (r.rowCount === 0) return res.json({ success: true, isClassTeacher: false, classId: null, className: null });
+    res.json({ success: true, isClassTeacher: true, classId: r.rows[0].class_id, className: r.rows[0].class_name });
+  })
+);
+
+async function requireClassTeacherOf(teacherId) {
+  const r = await pool.query(
+    `SELECT ct.class_id, c.name AS class_name FROM ecw_class_teachers ct
+     JOIN ecw_classes c ON c.id = ct.class_id WHERE ct.teacher_id = $1`,
+    [teacherId]
+  );
+  if (r.rowCount === 0) throw httpError(403, "You are not set as a class teacher. Ask your school admin.");
+  return r.rows[0];
+}
+
+// Whole-class, all-subjects report: every student, their per-subject and
+// overall averages -- drives the class teacher's dashboard graphs.
+router.get(
+  "/class-teacher/report",
+  wrap(async (req, res) => {
+    const { class_id: classId, class_name: className } = await requireClassTeacherOf(req.member.id);
+
+    const [attempts, students] = await Promise.all([
+      pool.query(
+        `SELECT a.student_id, z.subject, a.score_percent
+         FROM ecw_quiz_attempts a JOIN ecw_quizzes z ON z.id = a.quiz_id
+         WHERE z.class_id = $1 AND a.submitted_at IS NOT NULL`,
+        [classId]
+      ),
+      pool.query(
+        "SELECT id, full_name, email, profile_image FROM ecw_members WHERE role = 'student' AND class_id = $1 ORDER BY full_name",
+        [classId]
+      ),
+    ]);
+
+    const bySubject = new Map();
+    const byStudent = new Map();
+    for (const row of attempts.rows) {
+      if (!bySubject.has(row.subject)) bySubject.set(row.subject, { sum: 0, n: 0 });
+      const subj = bySubject.get(row.subject);
+      subj.sum += row.score_percent || 0; subj.n += 1;
+
+      if (!byStudent.has(row.student_id)) byStudent.set(row.student_id, { sum: 0, n: 0, subjects: new Map() });
+      const st = byStudent.get(row.student_id);
+      st.sum += row.score_percent || 0; st.n += 1;
+      if (!st.subjects.has(row.subject)) st.subjects.set(row.subject, { sum: 0, n: 0 });
+      const stSubj = st.subjects.get(row.subject);
+      stSubj.sum += row.score_percent || 0; stSubj.n += 1;
+    }
+
+    res.json({
+      success: true,
+      classId,
+      className,
+      subjectAverages: [...bySubject.entries()].map(([subject, v]) => ({ subject, average: Math.round(v.sum / v.n), count: v.n })),
+      students: students.rows.map((s) => {
+        const agg = byStudent.get(s.id);
+        return {
+          id: s.id,
+          fullName: s.full_name,
+          email: s.email,
+          profileImage: s.profile_image || "",
+          quizzesDone: agg ? agg.n : 0,
+          average: agg ? Math.round(agg.sum / agg.n) : null,
+          subjects: agg ? [...agg.subjects.entries()].map(([subject, v]) => ({ subject, average: Math.round(v.sum / v.n), count: v.n })) : [],
+        };
+      }),
+    });
+  })
+);
+
+// One student's full report across every subject in the class, in date order.
+router.get(
+  "/class-teacher/students/:studentId/report",
+  wrap(async (req, res) => {
+    const { class_id: classId, class_name: className } = await requireClassTeacherOf(req.member.id);
+    const studentId = parseId(req.params.studentId, "student");
+
+    const student = await pool.query(
+      "SELECT id, full_name, email, profile_image FROM ecw_members WHERE id = $1 AND role = 'student' AND class_id = $2",
+      [studentId, classId]
+    );
+    if (student.rowCount === 0) throw httpError(404, "Student not found in your class.");
+
+    const attempts = await pool.query(
+      `SELECT z.subject, z.title AS quiz_title, t.full_name AS teacher_name,
+              a.score_percent, a.final_score, a.total, a.submitted_at
+       FROM ecw_quiz_attempts a
+       JOIN ecw_quizzes z ON z.id = a.quiz_id
+       JOIN ecw_members t ON t.id = z.teacher_id
+       WHERE z.class_id = $1 AND a.student_id = $2 AND a.submitted_at IS NOT NULL
+       ORDER BY a.submitted_at DESC`,
+      [classId, studentId]
+    );
+
+    const average = attempts.rowCount
+      ? Math.round(attempts.rows.reduce((s, r) => s + (r.score_percent || 0), 0) / attempts.rowCount)
+      : null;
+
+    res.json({
+      success: true,
+      className,
+      student: {
+        id: student.rows[0].id,
+        fullName: student.rows[0].full_name,
+        email: student.rows[0].email,
+        profileImage: student.rows[0].profile_image || "",
+      },
+      average,
+      quizzesDone: attempts.rowCount,
+      results: attempts.rows.map((r) => ({
+        subject: r.subject,
+        quizTitle: r.quiz_title,
+        teacherName: r.teacher_name,
+        scorePercent: r.score_percent,
+        finalScore: r.final_score,
+        total: r.total,
+        submittedAt: r.submitted_at,
       })),
     });
   })

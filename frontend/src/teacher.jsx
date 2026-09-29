@@ -744,14 +744,14 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
   const active = section === 'noteEditor' ? 'notes' : section === 'quizEditor' ? 'quizzes' : section;
   return (
     <div style={{ width: 240, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '18px 14px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 16px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
-             <img src={logo} alt="Easy Class" style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'transparent' }} />
-          </div>
-          <div>
-   <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <div style={{ width: 30, height: 30, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 58, padding: '2px 4px 10px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
+              <img src={logo} alt="Easy Class" style={{ display: 'block', width: 150, height: 42, objectFit: 'contain', background: 'transparent' }} />
+           </div>
+           <div style={{ marginBottom: 16 }}>
+         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+           <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
             <span className="td-heading" style={{ fontSize: 14.5, fontWeight: 700, color: t.text, display: 'block', letterSpacing: -0.2 }}>Easy Class</span>
-            <span style={{ fontSize: 10.5, color: t.subtext }}>Teacher workspace</span>
+             <span style={{ fontSize: 10.5, color: t.subtext, display: 'block', marginTop: 2 }}>Teacher workspace</span>
           </div>
         </div>
         {onClose && <button type="button" aria-label="Close menu" onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: t.subtext, display: 'flex' }}><X size={18} /></button>}
