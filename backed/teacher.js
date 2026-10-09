@@ -24,16 +24,22 @@
    8. POST /quizzes/:id/students/:studentId/reopen lets a teacher give one
       specific student another chance at a quiz whose window has closed, or
       extend a student's own deadline if they're mid-attempt.
-   9. NEW: /students and /quizzes/:id/results now include each student's
-      profile photo, so the teacher dashboard can show a real avatar instead
-      of just initials.
-   10. NEW: GET /marks -- one flat, filterable table of every submitted mark
-       across every quiz/class/subject this teacher owns (student photo,
-       name, subject, quiz, class, date, score), for the "All marks" screen.
-   11. NEW: GET /quizzes/:id/students/:studentId/review -- lets a teacher open
-       the same question-by-question breakdown (their answer vs. the correct
-       one) that a student sees for their own attempt, from anywhere a
-       "Review" button appears (Quiz results, All marks).
+   9. /students and /quizzes/:id/results include each student's profile photo.
+   10. GET /marks -- one flat, filterable table of every submitted mark.
+   11. GET /quizzes/:id/students/:studentId/review -- question-by-question
+       breakdown of one student's attempt.
+   12. NEW (live Kahoot game): a teacher can host any of their quizzes live.
+         GET  /kahoot/games/active          the teacher's running game (if any)
+         POST /kahoot/games                 { quizId, seconds }  -> new lobby
+         GET  /kahoot/games/:id             full host state
+         POST /kahoot/games/:id/advance     { from, index }  lobby -> question
+                                            -> reveal -> next question ... -> finished
+         POST /kahoot/games/:id/end         finish the game now
+       The tables are created (idempotently, under an advisory lock) from
+       KAHOOT_SCHEMA_SQL below -- identical to kahoot.sql. Students hear about
+       the game over the class socket room (kahoot:started / kahoot:state) and
+       the teacher hears about joins/answers on their own room
+       (kahoot:playerJoined / kahoot:answerCount).
    ============================================================================ */
 
 const express = require("express");
@@ -52,16 +58,93 @@ router.post("/login", auth.login);
 router.use(cls.requireMember("teacher"));
 
 /* ------------------------------ database safety ------------------------------ */
-// ecw_quiz_reopens now lives in classroom.js's central schema (see the FIX
-// comment there) instead of being created here a second time -- this used
-// to race with student.js's identical copy of this block at every startup.
-// router.use(cls.requireReady) above already guarantees the table exists
-// before any route below can run.
+// ecw_quiz_reopens now lives in classroom.js's central schema.
+// router.use(cls.requireReady) above already guarantees it exists.
 
-// FIX (student photos): older deployments may not have this column yet.
-// Safe/idempotent to run on every boot; student.js runs the same statement
-// so whichever router loads first wins and the other is a no-op.
+// Older deployments may not have this column yet. Idempotent.
 pool.query("ALTER TABLE ecw_members ADD COLUMN IF NOT EXISTS profile_image TEXT").catch(() => {});
+
+/* ----------------------------- kahoot schema (SQL) ---------------------------- */
+// Same script as kahoot.sql. student.js runs the exact same thing; the
+// advisory lock makes the two copies take turns instead of racing (which is
+// what produced the old "pg_type_typname_nsp_index" duplicate-key error).
+const KAHOOT_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS ecw_kahoot_games (
+  id                  SERIAL PRIMARY KEY,
+  quiz_id             INTEGER     NOT NULL REFERENCES ecw_quizzes(id)  ON DELETE CASCADE,
+  teacher_id          INTEGER     NOT NULL REFERENCES ecw_members(id)  ON DELETE CASCADE,
+  class_id            INTEGER     NOT NULL REFERENCES ecw_classes(id)  ON DELETE CASCADE,
+  pin                 VARCHAR(8)  NOT NULL,
+  status              VARCHAR(12) NOT NULL DEFAULT 'lobby'
+                        CHECK (status IN ('lobby', 'question', 'reveal', 'finished')),
+  current_index       INTEGER     NOT NULL DEFAULT -1,
+  question_seconds    INTEGER     NOT NULL DEFAULT 20
+                        CHECK (question_seconds BETWEEN 5 AND 120),
+  question_started_at TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  ended_at            TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ecw_kahoot_games_live_pin
+  ON ecw_kahoot_games (pin) WHERE status <> 'finished';
+CREATE INDEX IF NOT EXISTS ecw_kahoot_games_class_idx
+  ON ecw_kahoot_games (class_id, status);
+CREATE INDEX IF NOT EXISTS ecw_kahoot_games_teacher_idx
+  ON ecw_kahoot_games (teacher_id, status);
+
+CREATE TABLE IF NOT EXISTS ecw_kahoot_players (
+  id         SERIAL PRIMARY KEY,
+  game_id    INTEGER     NOT NULL REFERENCES ecw_kahoot_games(id) ON DELETE CASCADE,
+  student_id INTEGER     NOT NULL REFERENCES ecw_members(id)      ON DELETE CASCADE,
+  score      INTEGER     NOT NULL DEFAULT 0,
+  streak     INTEGER     NOT NULL DEFAULT 0,
+  joined_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (game_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS ecw_kahoot_players_game_idx
+  ON ecw_kahoot_players (game_id, score DESC);
+
+CREATE TABLE IF NOT EXISTS ecw_kahoot_answers (
+  id          SERIAL PRIMARY KEY,
+  game_id     INTEGER     NOT NULL REFERENCES ecw_kahoot_games(id)   ON DELETE CASCADE,
+  player_id   INTEGER     NOT NULL REFERENCES ecw_kahoot_players(id) ON DELETE CASCADE,
+  question_id INTEGER     NOT NULL REFERENCES ecw_quiz_questions(id) ON DELETE CASCADE,
+  option_id   INTEGER     NOT NULL REFERENCES ecw_quiz_options(id)   ON DELETE CASCADE,
+  correct     BOOLEAN     NOT NULL DEFAULT FALSE,
+  points      INTEGER     NOT NULL DEFAULT 0,
+  response_ms INTEGER     NOT NULL DEFAULT 0,
+  answered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (game_id, player_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS ecw_kahoot_answers_question_idx
+  ON ecw_kahoot_answers (game_id, question_id);
+`;
+
+let kahootReady = null;
+function ensureKahootSchema() {
+  if (!kahootReady) {
+    kahootReady = (async () => {
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("SELECT pg_advisory_xact_lock(724001)");
+        await client.query(KAHOOT_SCHEMA_SQL);
+        await client.query("COMMIT");
+      } catch (err) {
+        await client.query("ROLLBACK").catch(() => {});
+        kahootReady = null; // allow a retry on the next request
+        throw err;
+      } finally {
+        client.release();
+      }
+    })();
+  }
+  return kahootReady;
+}
+
+// Only the kahoot routes wait for the tables; everything else is untouched.
+router.use("/kahoot", (req, res, next) => {
+  ensureKahootSchema().then(() => next(), next);
+});
 
 /* --------------------------------- helpers ---------------------------------- */
 
@@ -347,9 +430,7 @@ async function loadQuizzes(where, params) {
   const questionsByQuiz = new Map();
   for (const row of qs.rows) {
     if (!questionsByQuiz.has(row.quiz_id)) questionsByQuiz.set(row.quiz_id, []);
-    // `SELECT *` already pulled `marks` out of the row; it is passed on here
-    // so a weight set in the editor (see writeQuestions) shows up again on
-    // reload, and the quiz preview/results screens can reflect it too.
+    // `marks` is passed on so a weight set in the editor shows up again on reload.
     questionsByQuiz.get(row.quiz_id).push({ id: row.id, question: row.question, marks: row.marks, options: optionsByQuestion.get(row.id) || [] });
   }
 
@@ -378,9 +459,7 @@ async function getQuiz(id, teacherId) {
 }
 
 // Drops empty options and keeps at most one correct answer per question.
-// `marks` (how much this question is worth -- see the migration in
-// classroom.js) is parsed and clamped here like every other numeric field on
-// this quiz, so a teacher's per-question weight is actually persisted.
+// `marks` is parsed and clamped here like every other numeric field.
 function normalizeQuestions(input) {
   if (input === undefined || input === null) return [];
   if (!Array.isArray(input)) throw httpError(400, "Questions must be a list.");
@@ -568,10 +647,7 @@ router.delete(
   })
 );
 
-// Lets a teacher give ONE student another chance at this quiz -- either
-// because they never started it and the window has closed ("missed it"), or
-// to extend their personal deadline if they're mid-attempt and ran out of
-// time. This never touches the schedule other students see.
+// Lets a teacher give ONE student another chance at this quiz.
 router.post(
   "/quizzes/:id/students/:studentId/reopen",
   wrap(async (req, res) => {
@@ -593,12 +669,8 @@ router.post(
       if (existing.rows[0].submitted_at) {
         throw httpError(400, "This student has already submitted the quiz.");
       }
-      // Already mid-attempt (or their attempt row exists but they ran out of
-      // time without submitting) -- just extend their own deadline.
       await pool.query("UPDATE ecw_quiz_attempts SET deadline_at = $1 WHERE id = $2", [deadline, existing.rows[0].id]);
     } else {
-      // Never started at all -- record a reopen grant; student.js's /start
-      // route checks this table once the class-wide window has closed.
       await pool.query(
         `INSERT INTO ecw_quiz_reopens (quiz_id, student_id, deadline_at) VALUES ($1, $2, $3)
          ON CONFLICT (quiz_id, student_id) DO UPDATE SET deadline_at = EXCLUDED.deadline_at, granted_at = NOW()`,
@@ -615,9 +687,7 @@ router.post(
 );
 
 // Lists every student in the class with a LEFT JOIN, so "never started"
-// shows up as its own visible row instead of the student being invisible.
-// FIX (student photos): now also selects s.profile_image so the results
-// table can show the same real avatar as the Students and All-marks pages.
+// shows up as its own visible row.
 router.get(
   "/quizzes/:id/results",
   wrap(async (req, res) => {
@@ -692,11 +762,7 @@ router.get(
   })
 );
 
-// One flattened table of every submitted mark, so a teacher doesn't have to
-// open each quiz separately to see who scored what. Filtering/sorting/
-// searching is done client-side in teacher.jsx, same pattern as
-// notes/quizzes/results elsewhere in this file. Includes each student's
-// photo so the "All marks" screen can show a real avatar per row.
+// One flattened table of every submitted mark.
 router.get(
   "/marks",
   wrap(async (req, res) => {
@@ -737,11 +803,7 @@ router.get(
   })
 );
 
-// The teacher-facing equivalent of the student's own GET /quizzes/:id/review
-// -- every question, what a specific student picked, and what was actually
-// correct. Reachable from anywhere a "Review" button appears (Quiz results,
-// All marks). getQuiz()'s ownership check keeps a teacher from reviewing a
-// quiz that isn't theirs.
+// Teacher-facing equivalent of the student's own review endpoint.
 router.get(
   "/quizzes/:id/students/:studentId/review",
   wrap(async (req, res) => {
@@ -796,8 +858,6 @@ router.get(
 
 /* --------------------------------- students --------------------------------- */
 
-// FIX (student photos): now also selects m.profile_image so the Students
-// page can show a real avatar per row.
 router.get(
   "/students",
   wrap(async (req, res) => {
@@ -826,6 +886,233 @@ router.get(
         profileImage: s.profile_image || "",
       })),
     });
+  })
+);
+
+/* ------------------------------ live kahoot game ------------------------------ */
+
+// Loads one of THIS teacher's games. db_now is the database clock, sent to
+// the browsers as serverTime so every screen counts the question timer
+// against the same clock instead of its own.
+async function loadGame(gameId, teacherId) {
+  const r = await pool.query(
+    `SELECT g.*, NOW() AS db_now, z.title AS quiz_title, c.name AS class_name
+     FROM ecw_kahoot_games g
+     JOIN ecw_quizzes z ON z.id = g.quiz_id
+     JOIN ecw_classes c ON c.id = g.class_id
+     WHERE g.id = $1 AND g.teacher_id = $2`,
+    [gameId, teacherId]
+  );
+  if (r.rowCount === 0) throw httpError(404, "Game not found.");
+  return r.rows[0];
+}
+
+// Everything the host screen needs. The host always sees which option is
+// correct (students only get that after the reveal -- see student.js).
+async function kahootState(g) {
+  const [qs, ps] = await Promise.all([
+    pool.query("SELECT id, question FROM ecw_quiz_questions WHERE quiz_id = $1 ORDER BY position, id", [g.quiz_id]),
+    pool.query(
+      `SELECT p.student_id, p.score, p.streak, m.full_name, m.profile_image
+       FROM ecw_kahoot_players p JOIN ecw_members m ON m.id = p.student_id
+       WHERE p.game_id = $1 ORDER BY p.score DESC, m.full_name`,
+      [g.id]
+    ),
+  ]);
+  const total = qs.rowCount;
+  const players = ps.rows.map((p, i) => ({
+    id: p.student_id,
+    name: p.full_name,
+    image: p.profile_image || "",
+    score: p.score,
+    streak: p.streak,
+    rank: i + 1,
+  }));
+
+  let question = null;
+  let answeredCount = 0;
+  const cur = g.current_index >= 0 && g.current_index < total ? qs.rows[g.current_index] : null;
+  if (cur && (g.status === "question" || g.status === "reveal")) {
+    const [os, ac] = await Promise.all([
+      pool.query("SELECT id, option_text, is_correct FROM ecw_quiz_options WHERE question_id = $1 ORDER BY position, id", [cur.id]),
+      pool.query("SELECT option_id, COUNT(*)::int AS n FROM ecw_kahoot_answers WHERE game_id = $1 AND question_id = $2 GROUP BY option_id", [g.id, cur.id]),
+    ]);
+    const counts = new Map(ac.rows.map((r) => [r.option_id, r.n]));
+    answeredCount = ac.rows.reduce((s, r) => s + r.n, 0);
+    question = {
+      id: cur.id,
+      question: cur.question,
+      options: os.rows.map((o) => ({ id: o.id, optionText: o.option_text, isCorrect: o.is_correct, count: counts.get(o.id) || 0 })),
+    };
+  }
+
+  return {
+    id: g.id,
+    pin: g.pin,
+    status: g.status,
+    currentIndex: g.current_index,
+    total,
+    seconds: g.question_seconds,
+    questionStartedAt: g.question_started_at,
+    serverTime: new Date(g.db_now).getTime(),
+    quizId: g.quiz_id,
+    quizTitle: g.quiz_title,
+    classId: g.class_id,
+    className: g.class_name,
+    question,
+    answeredCount,
+    playerCount: players.length,
+    players,
+  };
+}
+
+// Tells every student in the class that the game moved on. They fetch their
+// own (answer-free) view from student.js; this payload is deliberately tiny.
+function announceKahoot(g, event = "kahoot:state") {
+  try {
+    emit(rooms.class(g.class_id), event, {
+      gameId: g.id,
+      quizTitle: g.quiz_title,
+      status: g.status,
+      currentIndex: g.current_index,
+    });
+  } catch { /* realtime is best-effort */ }
+}
+
+// The teacher's running game, if any (so a refresh doesn't lose the game).
+// Must be registered before "/kahoot/games/:id".
+router.get(
+  "/kahoot/games/active",
+  wrap(async (req, res) => {
+    const r = await pool.query(
+      "SELECT id FROM ecw_kahoot_games WHERE teacher_id = $1 AND status <> 'finished' ORDER BY created_at DESC LIMIT 1",
+      [req.member.id]
+    );
+    if (r.rowCount === 0) return res.json({ success: true, game: null });
+    const g = await loadGame(r.rows[0].id, req.member.id);
+    res.json({ success: true, game: await kahootState(g) });
+  })
+);
+
+router.post(
+  "/kahoot/games",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const quizId = parseId(req.body && req.body.quizId, "quiz");
+    const quiz = await getQuiz(quizId, m.id);
+
+    if (quiz.questions.length === 0) throw httpError(400, "Add at least one question to this quiz before hosting it live.");
+    quiz.questions.forEach((q, i) => {
+      if (!q.question.trim()) throw httpError(400, `Question ${i + 1} has no text.`);
+      if (q.options.length < 2) throw httpError(400, `Question ${i + 1} needs at least two options.`);
+      if (q.options.filter((o) => o.isCorrect).length !== 1) throw httpError(400, `Question ${i + 1} needs exactly one correct answer.`);
+    });
+
+    const seconds = Math.min(120, Math.max(5, Number.parseInt(req.body && req.body.seconds, 10) || 20));
+
+    // One running game per teacher: close any older one first.
+    const old = await pool.query(
+      `UPDATE ecw_kahoot_games SET status = 'finished', ended_at = NOW()
+       WHERE teacher_id = $1 AND status <> 'finished' RETURNING id, class_id`,
+      [m.id]
+    );
+    for (const o of old.rows) {
+      try { emit(rooms.class(o.class_id), "kahoot:state", { gameId: o.id, status: "finished" }); } catch { /* best-effort */ }
+    }
+
+    let created = null;
+    for (let i = 0; i < 6 && !created; i++) {
+      const pin = String(Math.floor(100000 + Math.random() * 900000));
+      try {
+        const ins = await pool.query(
+          "INSERT INTO ecw_kahoot_games (quiz_id, teacher_id, class_id, pin, question_seconds) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+          [quizId, m.id, quiz.classId, pin, seconds]
+        );
+        created = ins.rows[0];
+      } catch (err) {
+        if (err.code !== "23505") throw err; // PIN collision -> try another
+      }
+    }
+    if (!created) throw httpError(500, "Could not create a game PIN. Please try again.");
+
+    const g = await loadGame(created.id, m.id);
+    announceKahoot(g, "kahoot:started");
+    res.status(201).json({ success: true, game: await kahootState(g) });
+  })
+);
+
+router.get(
+  "/kahoot/games/:id",
+  wrap(async (req, res) => {
+    const g = await loadGame(parseId(req.params.id, "game"), req.member.id);
+    res.json({ success: true, game: await kahootState(g) });
+  })
+);
+
+// lobby -> question 1 -> reveal -> question 2 -> reveal ... -> finished.
+// The browser sends the phase it is looking at ({ from, index }); if the game
+// already moved on (double click, or the auto-reveal and the button firing
+// together) nothing happens and the current state is returned instead.
+router.post(
+  "/kahoot/games/:id/advance",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "game");
+    const g = await loadGame(id, m.id);
+
+    const fromStatus = req.body && req.body.from;
+    const fromIndex = Number.parseInt(req.body && req.body.index, 10);
+    const stale =
+      g.status === "finished" ||
+      (fromStatus && fromStatus !== g.status) ||
+      (Number.isInteger(fromIndex) && fromIndex !== g.current_index);
+    if (stale) return res.json({ success: true, game: await kahootState(g) });
+
+    const total = (await pool.query("SELECT COUNT(*)::int AS n FROM ecw_quiz_questions WHERE quiz_id = $1", [g.quiz_id])).rows[0].n;
+
+    if (g.status === "lobby") {
+      const pc = await pool.query("SELECT COUNT(*)::int AS n FROM ecw_kahoot_players WHERE game_id = $1", [id]);
+      if (pc.rows[0].n === 0) throw httpError(400, "Wait for at least one student to join before starting.");
+      await pool.query(
+        "UPDATE ecw_kahoot_games SET status = 'question', current_index = 0, question_started_at = NOW() WHERE id = $1 AND status = 'lobby'",
+        [id]
+      );
+    } else if (g.status === "question") {
+      await pool.query(
+        "UPDATE ecw_kahoot_games SET status = 'reveal' WHERE id = $1 AND status = 'question' AND current_index = $2",
+        [id, g.current_index]
+      );
+    } else if (g.status === "reveal") {
+      if (g.current_index + 1 < total) {
+        await pool.query(
+          `UPDATE ecw_kahoot_games SET status = 'question', current_index = current_index + 1, question_started_at = NOW()
+           WHERE id = $1 AND status = 'reveal' AND current_index = $2`,
+          [id, g.current_index]
+        );
+      } else {
+        await pool.query(
+          "UPDATE ecw_kahoot_games SET status = 'finished', ended_at = NOW() WHERE id = $1 AND status = 'reveal' AND current_index = $2",
+          [id, g.current_index]
+        );
+      }
+    }
+
+    const next = await loadGame(id, m.id);
+    announceKahoot(next);
+    res.json({ success: true, game: await kahootState(next) });
+  })
+);
+
+router.post(
+  "/kahoot/games/:id/end",
+  wrap(async (req, res) => {
+    const m = req.member;
+    const id = parseId(req.params.id, "game");
+    await loadGame(id, m.id); // ownership check
+    await pool.query("UPDATE ecw_kahoot_games SET status = 'finished', ended_at = NOW() WHERE id = $1 AND status <> 'finished'", [id]);
+    const g = await loadGame(id, m.id);
+    announceKahoot(g);
+    res.json({ success: true, game: await kahootState(g) });
   })
 );
 
