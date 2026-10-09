@@ -66,9 +66,9 @@ const SHOW_MORE_STEP = 3;
 // Keep authentication and dashboard requests on the same backend. A deployed
 // frontend may provide the API explicitly; otherwise use the current origin
 // instead of silently pointing at a different Render service.
-const API_BASE = (typeof window !== 'undefined' && window.ECW_API_BASE)
+const API_BASE = ((typeof window !== 'undefined' && window.ECW_API_BASE)
   || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_BASE)
-  || (typeof window !== 'undefined' ? window.location.origin : '');
+  || (typeof window !== 'undefined' ? window.location.origin : '')).replace(/\/$/, '');
 // FIX (root cause of the "please sign in again" / dropped-live-updates bug):
 // this used to be "ecw_user_session", the EXACT SAME key student.jsx uses.
 // On any machine/browser where a teacher and a student are both signed in
@@ -817,6 +817,11 @@ function Header({ selectedClass, setSelectedClass, filterOptions, selectedSubjec
         <Dropdown value={selectedSubject} options={subjectOptions} onChange={setSelectedSubject} icon={BookOpen} />
         <PrimaryButton variant="outline" icon={Plus} onClick={onNewNote}>New note</PrimaryButton>
         <PrimaryButton variant="soft" icon={Plus} onClick={onNewQuiz}>New quiz</PrimaryButton>
+        <a href="https://create.kahoot.it/" target="_blank" rel="noopener noreferrer"
+          className="td-btn"
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8, background: '#46178f', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap' }}>
+          <Zap size={14} /> Prepare Kahoot
+        </a>
       </div>
     </div>
   );
@@ -3328,7 +3333,17 @@ const load = useCallback(async () => {
             )}
             {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} sessions={sessions} live={live} onViewSession={setViewingSession} />}
             {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />}
-            {section === 'marks' && <MarksPage request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />}
+            {section === 'marks' && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '16px 20px 0' }}>
+                  <a href="https://create.kahoot.it/" target="_blank" rel="noopener noreferrer" className="td-btn"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8, background: '#46178f', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap' }}>
+                    <Zap size={14} /> Prepare Kahoot
+                  </a>
+                </div>
+                <MarksPage request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />
+              </>
+            )}
             {section === 'settings' && (
               <SettingsPage me={me} assignments={assignments} classes={classes} request={request} toast={toast}
                 onChange={(nextAssignments, nextClasses) => { setAssignments(nextAssignments); setClasses(nextClasses); }} />
