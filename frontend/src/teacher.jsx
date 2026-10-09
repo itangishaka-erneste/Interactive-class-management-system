@@ -817,11 +817,7 @@ function Header({ selectedClass, setSelectedClass, filterOptions, selectedSubjec
         <Dropdown value={selectedSubject} options={subjectOptions} onChange={setSelectedSubject} icon={BookOpen} />
         <PrimaryButton variant="outline" icon={Plus} onClick={onNewNote}>New note</PrimaryButton>
         <PrimaryButton variant="soft" icon={Plus} onClick={onNewQuiz}>New quiz</PrimaryButton>
-        <a href="https://create.kahoot.it/" target="_blank" rel="noopener noreferrer"
-          className="td-btn"
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8, background: '#46178f', color: '#fff', fontSize: 12, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap' }}>
-          <Zap size={14} /> Prepare Kahoot
-        </a>
+        <PrimaryButton variant="soft" icon={Zap} onClick={onNewQuiz}>Prepare game</PrimaryButton>
       </div>
     </div>
   );
