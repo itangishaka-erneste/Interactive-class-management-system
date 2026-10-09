@@ -8,7 +8,8 @@ import {
   ChevronDown, Clock, CheckCircle2, Circle, Menu, ArrowLeft,
   Save, FileText, AlertCircle, ListChecks, PenLine,
   CalendarClock, PlusCircle, Sparkles, Lock, RefreshCw, Check, BarChart3,
-  Radio, Award, Search, ArrowUpDown
+  Radio, Award, Search, ArrowUpDown,
+  Zap, Play, Trophy, Triangle, Hexagon, Square
 } from 'lucide-react';
 
 /* ============================================================================
@@ -2430,6 +2431,443 @@ function SettingsPage({ me, assignments, classes, request, onChange, toast }) {
           onCancel={() => setRemoving(null)}
           onConfirm={remove}
         />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================================
+   LIVE GAME (KAHOOT) -- paste this whole block into teacher.jsx, just above
+   the "APP" section (above `export default function Teacher`).
+
+   It reuses things teacher.jsx already has: t, inputStyle, StudentAvatar,
+   PrimaryButton, IconBtn, Notice, EmptyState, Modal, ConfirmModal, Chip,
+   Badge, CardsSkeleton, Spinner, useRemote-free fetching, and the API
+   routes already built in teacher.js (/kahoot/games/...).
+
+   New lucide imports needed at the top of teacher.jsx:
+     Zap, Play, Trophy, Triangle, Hexagon, Square
+   ============================================================================ */
+
+const KAHOOT_OPTIONS = [
+  { bg: '#DC2626', Icon: Triangle },
+  { bg: '#2A5CDB', Icon: Hexagon },
+  { bg: '#C98F00', Icon: Circle },
+  { bg: '#0E9F6E', Icon: Square },
+];
+const KAHOOT_SECONDS = [10, 20, 30, 60];
+
+// Same rules the server enforces in POST /kahoot/games, so a quiz that cannot
+// be hosted is greyed out with the reason instead of failing after a click.
+function hostProblem(quiz) {
+  if (!quiz.questions || quiz.questions.length === 0) return 'No questions yet';
+  for (let i = 0; i < quiz.questions.length; i++) {
+    const q = quiz.questions[i];
+    if (!q.question.trim()) return `Question ${i + 1} has no text`;
+    if (q.options.length < 2) return `Question ${i + 1} needs 2+ options`;
+    if (q.options.filter((o) => o.isCorrect).length !== 1) return `Question ${i + 1} needs one correct answer`;
+  }
+  return '';
+}
+
+/* ------------------------------- small pieces -------------------------------- */
+
+function Leaderboard({ players, limit, highlightTop = true }) {
+  const list = limit ? players.slice(0, limit) : players;
+  if (list.length === 0) return <p style={{ margin: 0, fontSize: 12.5, color: t.subtext }}>No players yet.</p>;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {list.map((p) => (
+        <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '26px auto minmax(0,1fr) auto', gap: 10, alignItems: 'center', padding: '8px 10px', borderRadius: 8, background: highlightTop && p.rank === 1 ? t.greenSoft : t.panel }}>
+          <span className="td-heading" style={{ fontSize: 13, fontWeight: 800, color: p.rank === 1 ? t.green : t.subtext, textAlign: 'center' }}>{p.rank}</span>
+          <StudentAvatar name={p.name} src={p.image} size={26} />
+          <span style={{ fontSize: 13, fontWeight: 600, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {p.name}
+            {p.streak >= 2 && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 700, color: t.orange }}>{p.streak} in a row</span>}
+          </span>
+          <span className="td-heading" style={{ fontSize: 13.5, fontWeight: 800, color: t.text }}>{p.score.toLocaleString()}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Podium({ players }) {
+  const top = players.slice(0, 3);
+  if (top.length === 0) return null;
+  const order = [top[1], top[0], top[2]].filter(Boolean);
+  const heights = { 1: 150, 2: 112, 3: 84 };
+  const colors = { 1: t.green, 2: t.blue, 3: t.orange };
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'center', gap: 10, padding: '10px 0' }}>
+      {order.map((p) => (
+        <div key={p.id} style={{ flex: '1 1 0', maxWidth: 170, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, minWidth: 0 }}>
+          {p.rank === 1 && <Trophy size={22} color={t.green} />}
+          <StudentAvatar name={p.name} src={p.image} size={p.rank === 1 ? 52 : 42} />
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: t.text, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</span>
+          <div style={{ width: '100%', height: heights[p.rank], background: colors[p.rank], borderRadius: '8px 8px 0 0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start', paddingTop: 10, color: '#fff' }}>
+            <span className="td-heading" style={{ fontSize: 24, fontWeight: 800 }}>{p.rank}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.95 }}>{p.score.toLocaleString()} pts</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TimerBar({ remaining, total }) {
+  const pct = total ? Math.max(0, Math.min(100, (remaining / total) * 100)) : 0;
+  const low = remaining <= 5;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ flex: 1, height: 10, borderRadius: 6, background: t.panel, overflow: 'hidden' }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: low ? t.red : t.green, borderRadius: 6, transition: 'width .25s linear, background .2s' }} />
+      </div>
+      <span className="td-heading" style={{ fontSize: 22, fontWeight: 800, color: low ? t.red : t.text, minWidth: 34, textAlign: 'right' }}>{Math.ceil(remaining)}</span>
+    </div>
+  );
+}
+
+/* ------------------------------- setup screen -------------------------------- */
+
+function KahootSetup({ quizzes, preselectQuizId, onStart, starting }) {
+  const [quizId, setQuizId] = useState(preselectQuizId || null);
+  const [seconds, setSeconds] = useState(20);
+  useEffect(() => { if (preselectQuizId) setQuizId(preselectQuizId); }, [preselectQuizId]);
+
+  const selected = quizzes.find((q) => q.id === quizId);
+
+  return (
+    <div className="td-page-pad" style={{ padding: 22, maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div>
+        <p className="td-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>Host a live game</p>
+        <p style={{ margin: '3px 0 0', fontSize: 13, color: t.subtext, lineHeight: 1.5 }}>
+          Pick one of your quizzes. Students in that class see the game on their dashboard and join with a PIN. Answers are scored on speed, so quick correct answers earn more.
+        </p>
+      </div>
+
+      {quizzes.length === 0 ? (
+        <EmptyState icon={Zap} title="No quizzes to host" text="Create a quiz with at least one question first. Any quiz you own can be played live, published or not." />
+      ) : (
+        <>
+          <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, overflow: 'hidden' }}>
+            <div style={{ padding: '11px 16px', background: t.panel }}><span className="td-heading" style={{ fontSize: 13, fontWeight: 700 }}>1. Choose a quiz</span></div>
+            <div className="td-scroll" style={{ maxHeight: 320, overflowY: 'auto' }}>
+              {quizzes.map((q) => {
+                const problem = hostProblem(q);
+                const active = q.id === quizId;
+                return (
+                  <button key={q.id} type="button" disabled={!!problem} onClick={() => setQuizId(q.id)} className="td-btn" aria-pressed={active}
+                    style={{ width: '100%', textAlign: 'left', display: 'grid', gridTemplateColumns: '20px minmax(0,1fr) auto', gap: 12, alignItems: 'center', padding: '12px 16px', border: 'none', borderTop: `1px solid ${t.border}`, background: active ? t.greenSoft : '#fff', cursor: problem ? 'not-allowed' : 'pointer', opacity: problem ? 0.55 : 1 }}>
+                    {active ? <CheckCircle2 size={18} color={t.green} /> : <Circle size={18} color={t.faint} />}
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q.title || 'Untitled quiz'}</span>
+                      <span style={{ display: 'block', fontSize: 11.5, color: problem ? t.orange : t.subtext, marginTop: 2 }}>
+                        {problem || `${q.questions.length} question${q.questions.length === 1 ? '' : 's'}`}
+                      </span>
+                    </span>
+                    <span style={{ display: 'flex', gap: 5 }}><Chip tone="blue">{q.className}</Chip><Chip tone="green">{q.subject}</Chip></span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <span className="td-heading" style={{ fontSize: 13, fontWeight: 700 }}>2. Time per question</span>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {KAHOOT_SECONDS.map((s) => (
+                <button key={s} type="button" onClick={() => setSeconds(s)} className="td-btn" aria-pressed={seconds === s}
+                  style={{ border: `1px solid ${seconds === s ? t.green : t.border}`, background: seconds === s ? t.greenSoft : '#fff', color: seconds === s ? t.green : t.text, borderRadius: 8, padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                  {s} sec
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <PrimaryButton icon={Play} busy={starting} disabled={!selected} onClick={() => onStart(selected.id, seconds)}>Open the lobby</PrimaryButton>
+            {selected && <span style={{ fontSize: 12, color: t.subtext }}>Students in {selected.className} will be invited right away.</span>}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------- host console -------------------------------- */
+
+function KahootLobby({ game, onStart, onEnd, busy }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ background: t.text, color: '#fff', borderRadius: 12, padding: '26px 20px', textAlign: 'center' }}>
+        <p style={{ margin: 0, fontSize: 13, opacity: 0.75 }}>Students in {game.className}: open Live game and enter the PIN</p>
+        <p className="td-heading" style={{ margin: '8px 0 2px', fontSize: 'clamp(44px, 12vw, 76px)', fontWeight: 800, letterSpacing: 6, lineHeight: 1.05 }}>{game.pin}</p>
+        <p style={{ margin: 0, fontSize: 12.5, opacity: 0.75 }}>{game.quizTitle} · {game.total} question{game.total === 1 ? '' : 's'} · {game.seconds}s each</p>
+      </div>
+
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Users size={15} color={t.blue} />
+          <span className="td-heading" style={{ fontSize: 13, fontWeight: 700 }}>{game.playerCount} joined</span>
+          <span className="td-live-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: t.green, marginLeft: 2 }} />
+        </div>
+        {game.players.length === 0 ? (
+          <p style={{ margin: 0, fontSize: 13, color: t.subtext }}>Waiting for students to join…</p>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {game.players.map((p) => (
+              <span key={p.id} className="td-fade" style={{ display: 'inline-flex', alignItems: 'center', gap: 7, background: t.panel, borderRadius: 20, padding: '4px 12px 4px 4px', fontSize: 12.5, fontWeight: 600, color: t.text }}>
+                <StudentAvatar name={p.name} src={p.image} size={24} /> {p.name}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <PrimaryButton icon={Play} busy={busy} disabled={game.playerCount === 0} onClick={onStart}>Start game</PrimaryButton>
+        <PrimaryButton variant="outline" onClick={onEnd} disabled={busy}>Cancel game</PrimaryButton>
+      </div>
+      {game.playerCount === 0 && <p style={{ margin: '-8px 0 0', fontSize: 11.5, color: t.faint }}>You can start once at least one student has joined.</p>}
+    </div>
+  );
+}
+
+function KahootQuestion({ game, remaining, onReveal, onEnd, busy }) {
+  const q = game.question;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Chip tone="blue">Question {game.currentIndex + 1} of {game.total}</Chip>
+        <Chip tone="neutral">{game.answeredCount} of {game.playerCount} answered</Chip>
+      </div>
+      <TimerBar remaining={remaining} total={game.seconds} />
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 12, padding: '26px 20px', textAlign: 'center' }}>
+        <h2 className="td-heading" style={{ margin: 0, fontSize: 'clamp(18px, 3.4vw, 26px)', fontWeight: 700, color: t.text, lineHeight: 1.35 }}>{q ? q.question : '…'}</h2>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+        {(q ? q.options : []).map((o, i) => {
+          const s = KAHOOT_OPTIONS[i % 4];
+          return (
+            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 12, background: s.bg, color: '#fff', borderRadius: 10, padding: '16px 16px', minHeight: 64 }}>
+              <s.Icon size={20} fill="#fff" strokeWidth={0} style={{ flexShrink: 0 }} />
+              <span style={{ fontSize: 14.5, fontWeight: 700, lineHeight: 1.35 }}>{o.optionText}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <PrimaryButton variant="blue" busy={busy} onClick={onReveal}>Show answer now</PrimaryButton>
+        <PrimaryButton variant="outline" onClick={onEnd} disabled={busy}>End game</PrimaryButton>
+      </div>
+      <p style={{ margin: '-6px 0 0', fontSize: 11.5, color: t.faint }}>The answer shows by itself when time runs out or everyone has answered.</p>
+    </div>
+  );
+}
+
+function KahootReveal({ game, onNext, onEnd, busy }) {
+  const q = game.question;
+  const isLast = game.currentIndex + 1 >= game.total;
+  const maxCount = Math.max(1, ...(q ? q.options.map((o) => o.count) : [1]));
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <Chip tone="green">Answer · Question {game.currentIndex + 1} of {game.total}</Chip>
+        <Chip tone="neutral">{game.answeredCount} of {game.playerCount} answered</Chip>
+      </div>
+      <h2 className="td-heading" style={{ margin: 0, fontSize: 'clamp(17px, 3vw, 22px)', fontWeight: 700, color: t.text, lineHeight: 1.35 }}>{q ? q.question : ''}</h2>
+
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {(q ? q.options : []).map((o, i) => {
+          const s = KAHOOT_OPTIONS[i % 4];
+          return (
+            <div key={o.id} style={{ opacity: o.isCorrect ? 1 : 0.55 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 13, fontWeight: o.isCorrect ? 700 : 500, color: o.isCorrect ? t.green : t.text }}>
+                {o.isCorrect ? <CheckCircle2 size={15} /> : <X size={15} color={t.faint} />}
+                <span style={{ flex: 1, minWidth: 0 }}>{o.optionText}</span>
+                <span className="td-heading" style={{ fontWeight: 800 }}>{o.count}</span>
+              </div>
+              <div style={{ height: 14, background: t.panel, borderRadius: 7, overflow: 'hidden' }}>
+                <div style={{ width: `${(o.count / maxCount) * 100}%`, height: '100%', background: s.bg, borderRadius: 7, transition: 'width .4s ease' }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <Trophy size={15} color={t.green} />
+          <span className="td-heading" style={{ fontSize: 13, fontWeight: 700 }}>Top 5</span>
+        </div>
+        <Leaderboard players={game.players} limit={5} />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <PrimaryButton icon={isLast ? Trophy : Play} busy={busy} onClick={onNext}>{isLast ? 'Show final results' : 'Next question'}</PrimaryButton>
+        <PrimaryButton variant="outline" onClick={onEnd} disabled={busy}>End game</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+function KahootFinished({ game, onNewGame }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ textAlign: 'center' }}>
+        <h2 className="td-heading" style={{ margin: 0, fontSize: 20, color: t.text }}>Game over</h2>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: t.subtext }}>{game.quizTitle} · {game.className} · {game.playerCount} player{game.playerCount === 1 ? '' : 's'}</p>
+      </div>
+      {game.players.length === 0 ? (
+        <Notice tone="orange">Nobody joined this game.</Notice>
+      ) : (
+        <>
+          <Podium players={game.players} />
+          <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 14 }}>
+            <p className="td-heading" style={{ margin: '0 0 10px', fontSize: 13, fontWeight: 700 }}>Final leaderboard</p>
+            <Leaderboard players={game.players} />
+          </div>
+        </>
+      )}
+      <div><PrimaryButton icon={Zap} onClick={onNewGame}>Host another game</PrimaryButton></div>
+    </div>
+  );
+}
+
+/* --------------------------------- the page ---------------------------------- */
+
+function KahootPage({ request, quizzes, preselectQuizId, refreshTick, toast }) {
+  const [game, setGame] = useState(null);
+  const [offset, setOffset] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const gameRef = useRef(null);
+  const autoRef = useRef('');
+
+  const applyGame = useCallback((g) => {
+    gameRef.current = g;
+    if (g) setOffset(g.serverTime - Date.now());
+    setGame(g);
+  }, []);
+
+  const loadActive = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await request('/kahoot/games/active');
+      applyGame(res.game || null);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [request, applyGame]);
+  useEffect(() => { loadActive(); }, [loadActive]);
+
+  const refresh = useCallback(async () => {
+    const g = gameRef.current;
+    if (!g || g.status === 'finished') return;
+    try {
+      const res = await request(`/kahoot/games/${g.id}`);
+      applyGame(res.game);
+    } catch { /* the next tick tries again */ }
+  }, [request, applyGame]);
+
+  useEffect(() => { if (refreshTick) refresh(); }, [refreshTick, refresh]);
+  useEffect(() => {
+    if (!game || game.status === 'finished') return undefined;
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [game && game.id, game && game.status, refresh]);
+
+  useEffect(() => {
+    if (!game || game.status !== 'question') return undefined;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [game && game.status, game && game.currentIndex]);
+
+  const advance = useCallback(async () => {
+    const g = gameRef.current;
+    if (!g) return;
+    setBusy(true);
+    try {
+      const res = await request(`/kahoot/games/${g.id}/advance`, { method: 'POST', body: { from: g.status, index: g.currentIndex } });
+      applyGame(res.game);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }, [request, applyGame, toast]);
+
+  const remaining = game && game.status === 'question' && game.questionStartedAt
+    ? Math.max(0, game.seconds - ((now + offset) - new Date(game.questionStartedAt).getTime()) / 1000)
+    : null;
+
+  useEffect(() => {
+    if (!game || game.status !== 'question' || remaining === null) return;
+    const everyoneIn = game.playerCount > 0 && game.answeredCount >= game.playerCount;
+    if (remaining <= 0 || everyoneIn) {
+      const key = `${game.id}:${game.currentIndex}`;
+      if (autoRef.current !== key) { autoRef.current = key; advance(); }
+    }
+  }, [game, remaining, advance]);
+
+  const start = async (quizId, seconds) => {
+    setStarting(true);
+    try {
+      const res = await request('/kahoot/games', { method: 'POST', body: { quizId, seconds } });
+      autoRef.current = '';
+      applyGame(res.game);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const endGame = async () => {
+    const g = gameRef.current;
+    if (!g) return;
+    setBusy(true);
+    try {
+      const res = await request(`/kahoot/games/${g.id}/end`, { method: 'POST' });
+      applyGame(res.game);
+      setConfirmEnd(false);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <div className="td-page-pad" style={{ padding: 22 }}><CardsSkeleton count={2} /></div>;
+  if (error) return <ErrorBlock message={error} onRetry={loadActive} />;
+
+  if (!game) {
+    return <KahootSetup quizzes={quizzes} preselectQuizId={preselectQuizId} onStart={start} starting={starting} />;
+  }
+
+  return (
+    <div className="td-fade td-page-pad" style={{ padding: 22, maxWidth: 820, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {game.status !== 'finished' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: t.green }}>
+          <Radio size={14} /> Live game · PIN {game.pin}
+        </div>
+      )}
+      {game.status === 'lobby' && <KahootLobby game={game} busy={busy} onStart={advance} onEnd={() => setConfirmEnd(true)} />}
+      {game.status === 'question' && <KahootQuestion game={game} remaining={remaining ?? game.seconds} busy={busy} onReveal={advance} onEnd={() => setConfirmEnd(true)} />}
+      {game.status === 'reveal' && <KahootReveal game={game} busy={busy} onNext={advance} onEnd={() => setConfirmEnd(true)} />}
+      {game.status === 'finished' && <KahootFinished game={game} onNewGame={() => applyGame(null)} />}
+
+      {confirmEnd && (
+        <ConfirmModal title="End this game now?" text="Students will see that the game finished. Scores so far are kept on the leaderboard." confirmLabel="End game"
+          busy={busy} onCancel={() => setConfirmEnd(false)} onConfirm={endGame} />
       )}
     </div>
   );
