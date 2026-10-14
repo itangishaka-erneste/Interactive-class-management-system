@@ -777,7 +777,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
           <span className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: RED_SOFT }}>
             <FileEdit size={22} color={RED} />
           </span>
-          <h3 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>
+          <h3 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: ORANGE }}>
             {skippedCount} question{skippedCount === 1 ? "" : "s"} unanswered
           </h3>
           <p className="text-xs text-gray-500 mb-5">
@@ -798,7 +798,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
               disabled={submitting}
               onClick={() => setConfirmingSubmit(false)}
               className="w-full py-2.5 font-bold text-xs rounded-lg border disabled:opacity-50"
-              style={{ borderColor: BLUE, color: BLUE }}
+              style={{ borderColor: ORANGE, color: ORANGE }}
             >
               Go back
             </button>
@@ -817,11 +817,11 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
           </span>
           <h2 className="font-extrabold text-xl mb-2" style={{ fontFamily: "'Poppins', sans-serif", color: GREEN }}>Congratulations!</h2>
           <p className="text-sm text-gray-600 mb-3">You finished the quiz. Great work!</p>
-          <h3 className="font-extrabold text-lg mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{result.scorePercent}%</h3>
+          <h3 className="font-extrabold text-lg mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: ORANGE }}>{result.scorePercent}%</h3>
           <p className="text-xs text-gray-500 mb-1">
             {result.rawScore} of {result.totalQuestions} correct on "{quiz.title}".
           </p>
-          <button type="button" onClick={onClose} className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity mt-3" style={{ background: BLUE }}>
+          <button type="button" onClick={onClose} className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity mt-3" style={{ background: ORANGE }}>
             Close Review
           </button>
         </div>
@@ -841,7 +841,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
             <Lightbulb size={16} color={ORANGE} />
           </span>
           <div className="flex-1 min-w-0">
-            <h3 className="font-extrabold text-[15px] truncate" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{quiz.title}</h3>
+            <h3 className="font-extrabold text-[15px] truncate" style={{ fontFamily: "'Poppins', sans-serif", color: ORANGE }}>{quiz.title}</h3>
             <p className="text-[11px] text-gray-400">{answeredCount}/{quiz.questions.length} answered</p>
           </div>
           {remainingMs !== null && (
