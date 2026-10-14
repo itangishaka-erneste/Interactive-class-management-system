@@ -810,11 +810,13 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
 
   if (result) {
     return (
-      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 px-4 py-6">
+      <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-4 py-6" role="dialog" aria-modal="true">
         <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-8 text-center">
-          <span className="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-3" style={{ background: ORANGE_SOFT }}>
-            <Award size={24} color={ORANGE} />
+          <span className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4" style={{ background: GREEN_SOFT }}>
+            <CheckCircle2 size={30} color={GREEN} />
           </span>
+          <h2 className="font-extrabold text-xl mb-2" style={{ fontFamily: "'Poppins', sans-serif", color: GREEN }}>Congratulations!</h2>
+          <p className="text-sm text-gray-600 mb-3">You finished the quiz. Great work!</p>
           <h3 className="font-extrabold text-lg mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{result.scorePercent}%</h3>
           <p className="text-xs text-gray-500 mb-1">
             {result.rawScore} of {result.totalQuestions} correct on "{quiz.title}".

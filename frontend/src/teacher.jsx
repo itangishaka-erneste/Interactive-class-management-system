@@ -891,8 +891,9 @@ function LiveActivityPanel({ sessions, live, onViewSession }) {
               : isAway
                 ? 'Left the quiz tab — penalty building up'
                 : `${s.answered ?? 0}/${s.total || '?'} questions answered`;
+            const progress = Math.max(0, Math.min(100, (Number(s.answered) || 0) / (Number(s.total) || 1) * 100));
             return (
-              <div key={s.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 16px', borderTop: `1px solid ${t.border}` }}>
+              <div key={s.key} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '10px 16px', borderTop: `1px solid ${t.border}`, borderLeft: `3px solid ${statusColor}` }}>
                 <span style={{ width: 7, height: 7, borderRadius: '50%', background: statusColor, flexShrink: 0 }} />
                 <div style={{ minWidth: 0, flex: 1 }}>
                   <p style={{ margin: 0, fontSize: 12.5, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -903,6 +904,12 @@ function LiveActivityPanel({ sessions, live, onViewSession }) {
                     {statusText}
                     {!isDone && <TypingDots color={statusColor} />}
                   </p>
+                  <div role="progressbar" aria-label={`${s.studentName} quiz progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress)} style={{ position: 'relative', height: 20, marginTop: 6, display: 'flex', alignItems: 'center' }}>
+                    <div style={{ position: 'absolute', left: 0, right: 0, height: 5, borderRadius: 5, background: t.panel }} />
+                    <div style={{ position: 'absolute', left: 0, width: `${progress}%`, height: 5, borderRadius: 5, background: statusColor, transition: 'width 450ms ease' }} />
+                    <span aria-hidden="true" style={{ position: 'absolute', left: `clamp(0px, calc(${progress}% - 10px), calc(100% - 20px))`, zIndex: 1, fontSize: 16, lineHeight: 1, transition: 'left 450ms ease' }}>🏎️</span>
+                    <span aria-hidden="true" title="Finish" style={{ position: 'absolute', right: 0, height: 16, borderRight: `3px dashed ${t.text}` }} />
+                  </div>
                   {!isDone && !isAway && s.lastAnswer && (
                     <p style={{ margin: '2px 0 0', fontSize: 10.5, color: t.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       Just chose: <strong style={{ color: t.subtext }}>{s.lastAnswer}</strong>
