@@ -1489,6 +1489,10 @@ function QuizzesDashboard({ quizzes, filter, setFilter, onView, onEdit, onToggle
 
 function QuestionEditor({ q, index, onChange, onRemove }) {
   const setField = (patch) => onChange({ ...q, ...patch });
+  const isOpenEnded = q.type === 'open_ended';
+  const setQuestionType = (type) => setField(type === 'open_ended'
+    ? { type, options: [] }
+    : { type, options: [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }] });
   const addOption = () => { if (q.options.length < 6) setField({ options: [...q.options, { id: uid(), optionText: '', isCorrect: false }] }); };
   const updateOption = (id, patch) => setField({ options: q.options.map((o) => (o.id === id ? { ...o, ...patch } : o)) });
   const removeOption = (id) => setField({ options: q.options.filter((o) => o.id !== id) });
@@ -1515,7 +1519,16 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
       </div>
       <textarea value={q.question} onChange={(e) => setField({ question: e.target.value })} rows={2} placeholder="Write the question…" aria-label={`Question ${index + 1}`}
         style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
-      <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 11.5, color: t.subtext }}>
+        Question type
+        <select value={isOpenEnded ? 'open_ended' : 'multiple_choice'} onChange={(e) => setQuestionType(e.target.value)} style={{ ...inputStyle, width: 'auto', padding: '6px 8px', background: '#fff' }}>
+          <option value="multiple_choice">Multiple choice</option>
+          <option value="open_ended">Open-ended</option>
+        </select>
+      </label>
+      {isOpenEnded ? (
+        <p style={{ margin: '10px 0 0', fontSize: 11.5, color: t.subtext }}>Students will type their answer. Review and mark open-ended responses manually.</p>
+      ) : <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {q.options.map((o, oi) => (
           <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <button type="button" onClick={() => markCorrect(o.id)} title="Mark as the correct answer" aria-label={`Mark option ${oi + 1} as correct`} aria-pressed={o.isCorrect}
@@ -1530,7 +1543,7 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
         {q.options.length < 6 && (
           <button type="button" onClick={addOption} className="td-btn" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: t.green, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 0', width: 'fit-content' }}><PlusCircle size={13} /> Add option</button>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1540,8 +1553,12 @@ function firstQuizProblem(questions) {
   if (questions.length === 0) return 'Add at least one question before publishing.';
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
-    const options = q.options.filter((o) => o.optionText.trim());
+    const options = (q.options || []).filter((o) => o.optionText.trim());
     if (!q.question.trim()) return `Question ${i + 1} has no text.`;
+    if (q.type === 'open_ended') {
+      if (!Number.isInteger(q.marks) || q.marks < 1) return `Question ${i + 1} needs a mark value of at least 1.`;
+      continue;
+    }
     if (options.length < 2) return `Question ${i + 1} needs at least two options.`;
     if (options.filter((o) => o.isCorrect).length !== 1) return `Question ${i + 1} needs exactly one correct answer.`;
     if (!Number.isInteger(q.marks) || q.marks < 1) return `Question ${i + 1} needs a mark value of at least 1.`;
