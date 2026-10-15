@@ -2,7 +2,6 @@ import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import dashboard from './assets/dashboard.png';
 import esms from './assets/esms.jpg';
-import trends from './assets/trends.jpg';
 import nesa from './assets/nesa.jpg';
 import reb from './assets/reb.jpg';
 import minedic from './assets/minedic.jpg';
@@ -12,114 +11,49 @@ import mukunzi from './assets/muk.png';
 import minister from './assets/minister.jpg';
 import milker from './assets/milker.jpg';
 import {
-  BookOpen,
-  ClipboardCheck,
-  GraduationCap,
-  CalendarCheck,
-  FileText,
-  Wallet,
-  ShieldCheck,
-  School,
-  LayoutDashboard,
-  Smartphone,
-  Landmark,
-  UserCircle2,
-  Building2,
-  ScrollText,
-  HeartHandshake,
-  Star,
-  Trophy,
-  Handshake,
-  Mail,
-  Clock3,
-  CheckCircle2,
-  TrendingUp,
-  ArrowUpRight,
-  Quote,
+  BookOpen, ClipboardCheck, GraduationCap, CalendarCheck, FileText, Wallet,
+  ShieldCheck, School, LayoutDashboard, Smartphone, Landmark, Mail, Clock3,
+  CheckCircle2, ArrowUpRight, Quote, ChevronDown, Menu, X, Sparkles,
+  Users, BarChart3, Settings2, Building2, KeyRound, Check,
 } from "lucide-react";
 
 /* ============================================================================
-   CONFIG
-   Add these to your frontend .env:
-
+   CONFIG  (.env)
      VITE_GOOGLE_CLIENT_ID=your-real-client-id.apps.googleusercontent.com
      VITE_API_BASE=http://localhost:5000
 
-   HOW SIGN-IN WORKS NOW
+   AUTH NOTES (unchanged behaviour)
    - Every "Continue with Google" button is the real Google Identity Services
-     button.
-   - School admin and super admin: the Google token is sent to the server,
-     which verifies it with Google and decides who gets in.
-       * School admin -> must be the Google email the school registered with,
-         and the school must be approved by the super admin.
-       * Super admin  -> must be the single email set as SUPERADMIN_EMAIL on
-         the server.
-   - Students and teachers are now ALSO checked against the real server
-     (POST /api/teacher/login|register and /api/student/login|register).
-     There is no more local/fake account table and no more client-minted
-     tokens: the token used everywhere afterwards (including by
-     Teacher.jsx's /api/teacher/* calls) is the real session token the
-     server issues. A class/subject the teacher adds at sign-in is saved
-     through POST /api/teacher/assignments, the same endpoint the teacher
-     dashboard's Settings page uses.
-
-   NOTE ON THIS PASS
-   This is a visual-only redesign of the same page (now Home.jsx). The color
-   palette is untouched (same green / navy / orange), and every auth/session/
-   API call below is byte-for-byte the same as before: same endpoints, same
-   storage keys, same fetch calls. Only markup, layout and CSS changed.
+     button. Admin tokens are verified on the server. Students/teachers are
+     checked against POST /api/{teacher|student}/login|register, and the
+     server-issued token is stored under a role-specific key.
+   - This pass is a visual/navigation redesign only: same endpoints, same
+     storage keys, same fetch calls.
    ============================================================================ */
 
 const GOOGLE_CLIENT_ID = import.meta.env?.VITE_GOOGLE_CLIENT_ID || "";
 const API_BASE = import.meta.env?.VITE_API_BASE || "http://localhost:5000";
 
-// Backend mount point for each member role. Both are expected to expose the
-// same shape as teacher.js: POST /register, POST /login (both open), and a
-// GET /me that requires "Authorization: Bearer <token>" and returns
-// { success, teacher|student, assignments?, classes? }.
 const MEMBER_API_PATH = { teacher: "teacher", student: "student" };
 
-// localStorage keys the various session tokens are kept under, so a page
-// refresh on any dashboard doesn't lose the sign-in.
 const ADMIN_SESSION_KEY = "ecw_admin_session";
 const SUPERADMIN_SESSION_KEY = "ecw_superadmin_session";
-// FIX (root cause of "Your login session is missing" on Teacher.jsx and the
-// silent bounce-back to home on Student.jsx): this used to be a single
-// shared USER_SESSION_KEY = "ecw_user_session" that every member role wrote
-// to. Teacher.jsx and Student.jsx were BOTH updated a while ago to read from
-// their own role-specific keys ("ecw_teacher_session" and
-// "ecw_student_session" respectively -- see the USER_SESSION_KEY comments in
-// those files) specifically so a teacher and a student signed in on the same
-// browser don't clobber each other's token. This file was never updated to
-// match: it kept writing every login to the old shared key, so
-// getSession() in Teacher.jsx/Student.jsx always found nothing, treated it
-// as "no token", and Teacher.jsx surfaced its boot error while Student.jsx's
-// requests came back 401 and triggered a real sign-out back to "/". Writing
-// to a per-role key here closes that gap.
+// Role-specific keys so a teacher and a student on one browser don't clobber
+// each other (Teacher.jsx / Student.jsx read from these same keys).
 const MEMBER_SESSION_KEY = {
   teacher: "ecw_teacher_session",
   student: "ecw_student_session",
 };
 
-// Steps shown in the "connecting" loading overlay.
-const LOADING_STEPS = [
-  "Verifying your details",
-  "Preparing your workspace",
-  "Almost there",
-];
-
-// Placeholder shown in the school code input hints.
+const LOADING_STEPS = ["Verifying your details", "Preparing your workspace", "Almost there"];
 const DEFAULT_SCHOOL_CODE = "ECR-123456";
 
-// Rotating screenshots shown inside the hero's browser-window mockup. Purely
-// presentational — nothing here talks to the server.
 const AD_SLIDES = [
-  { image: minister, icon: Landmark, caption: "Supporting Rwanda's education vision", path: "/dashboard · partnerships" },
-  { image: dashboard, icon: LayoutDashboard, caption: "One dashboard for the whole school", path: "/dashboard · overview" },
-  { image: milker, icon: School, caption: "Making school management simpler", path: "/dashboard · schools" },
+  { image: minister, icon: Landmark, caption: "Supporting Rwanda's education vision", path: "/dashboard/partnerships" },
+  { image: dashboard, icon: LayoutDashboard, caption: "One dashboard for the whole school", path: "/dashboard/overview" },
+  { image: milker, icon: School, caption: "Making school management simpler", path: "/dashboard/schools" },
 ];
 
-// Every subject a teacher can pick from when choosing what they teach.
 const SUBJECT_OPTIONS = [
   "Mathematics", "English", "Kinyarwanda", "French", "Physics", "Chemistry",
   "Biology", "Geography", "History", "Economics", "Entrepreneurship",
@@ -128,10 +62,6 @@ const SUBJECT_OPTIONS = [
   "Literature in English", "Kiswahili",
 ];
 
-// Every sign-in role the system supports. All of them use Google.
-//   - student / teacher -> register with a school code, then sign in with Google.
-//   - schoolAdmin -> Google only. The school itself is registered on /register.
-//   - superAdmin  -> Google only, allowed only for the server's SUPERADMIN_EMAIL.
 const ROLE_CONFIG = {
   student: { label: "Student", icon: BookOpen, canRegister: true, authField: "google" },
   teacher: { label: "Teacher", icon: GraduationCap, canRegister: true, authField: "google" },
@@ -141,32 +71,62 @@ const ROLE_CONFIG = {
 
 const isAdminRole = (role) => role === "schoolAdmin" || role === "superAdmin";
 
+/* Dashboards, grouped for the navbar menu and the "Choose your dashboard" section. */
+const DASHBOARDS = [
+  {
+    role: "student", tint: "#178754", group: "For learners & teachers", title: "Student",
+    short: "Notes, quizzes, report card",
+    text: "Everything a learner needs, in their pocket.",
+    points: ["Read class notes anytime", "Take auto-graded quizzes", "Check your report card"],
+  },
+  {
+    role: "teacher", tint: "#1D6FE0", group: "For learners & teachers", title: "Teacher",
+    short: "Marks, attendance, materials",
+    text: "Pick the classes and subjects you teach, then get on with teaching.",
+    points: ["Publish notes and quizzes", "Record marks and attendance", "Choose every class & subject at sign-in"],
+  },
+  {
+    role: "schoolAdmin", tint: "#FF4500", group: "For administrators", title: "School admin",
+    short: "Staff, students, fees",
+    text: "Run your school from one screen.",
+    points: ["Approve staff and students", "Manage school codes", "Track fees and reports"],
+  },
+  {
+    role: "superAdmin", tint: "rgb(22,32,111)", group: "For administrators", title: "Super admin",
+    short: "Every school, one view",
+    text: "Platform-wide oversight for the authorized account.",
+    points: ["Approve new schools", "Monitor platform health", "Authorized Google account only"],
+  },
+];
+
+const NAV_LINKS = [
+  { href: "#services", label: "Services" },
+  { href: "#how-it-works", label: "How it works" },
+  { href: "#team", label: "Team" },
+  { href: "#contact", label: "Contact" },
+];
+
+/* Shared input style so every form field looks identical. */
+const INPUT =
+  "w-full text-xs px-3.5 py-3 rounded-xl border border-neutral-200 bg-white focus:outline-none focus:border-[#178754] focus:ring-4 focus:ring-[#178754]/10 disabled:bg-neutral-50 disabled:cursor-not-allowed transition";
+
 /* ============================================================================
-   PRESENTATION-ONLY HELPERS
-   One small hook powers every scroll-in reveal on the page, so the motion
-   language stays consistent instead of a different effect per section.
+   PRESENTATION HELPERS
    ============================================================================ */
 
 function useReveal(options) {
   const ref = useRef(null);
   const [visible, setVisible] = useState(false);
-
   useEffect(() => {
     const node = ref.current;
     if (!node || typeof IntersectionObserver === "undefined") { setVisible(true); return undefined; }
     const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) {
-          setVisible(true);
-          observer.disconnect();
-        }
-      },
+      ([entry]) => { if (entry.isIntersecting) { setVisible(true); observer.disconnect(); } },
       { threshold: 0.2, ...options }
     );
     observer.observe(node);
     return () => observer.disconnect();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
   return [ref, visible];
 }
 
@@ -179,6 +139,16 @@ function Reveal({ children, className = "", as: Tag = "div" }) {
   );
 }
 
+function SectionHead({ tag, title, text, tagColor = "#178754", className = "" }) {
+  return (
+    <Reveal className={`max-w-2xl mb-10 ${className}`}>
+      <span className="inline-block text-[11px] font-bold px-3 py-1 rounded-full mb-3" style={{ color: tagColor, background: `${tagColor}14` }}>{tag}</span>
+      <h2 className="ecw-heading text-3xl sm:text-4xl font-extrabold text-neutral-900 leading-tight">{title}</h2>
+      {text && <p className="ecw-body text-sm text-neutral-600 leading-relaxed mt-3">{text}</p>}
+    </Reveal>
+  );
+}
+
 /* ============================================================================
    REAL GOOGLE SIGN-IN (Google Identity Services)
    ============================================================================ */
@@ -187,10 +157,7 @@ function decodeGoogleJwt(token) {
   const base64Url = token.split(".")[1];
   const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
   const jsonPayload = decodeURIComponent(
-    atob(base64)
-      .split("")
-      .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-      .join("")
+    atob(base64).split("").map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join("")
   );
   return JSON.parse(jsonPayload);
 }
@@ -215,7 +182,6 @@ function loadGoogleScript() {
   return gsiScriptPromise;
 }
 
-// { name, email, picture, credential } where `credential` is the Google ID token
 function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
   const containerRef = useRef(null);
   const handlerRef = useRef(onSignedIn);
@@ -225,11 +191,9 @@ function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
   useEffect(() => {
     if (!GOOGLE_CLIENT_ID) return undefined;
     let cancelled = false;
-
     loadGoogleScript()
       .then(() => {
         if (cancelled || !containerRef.current) return;
-
         gsiHandler = (response) => {
           try {
             const payload = decodeGoogleJwt(response.credential);
@@ -242,11 +206,8 @@ function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
                 credential: response.credential,
               });
             }
-          } catch {
-            setStatus("error");
-          }
+          } catch { setStatus("error"); }
         };
-
         if (!gsiInitialized) {
           window.google.accounts.id.initialize({
             client_id: GOOGLE_CLIENT_ID,
@@ -254,27 +215,19 @@ function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
           });
           gsiInitialized = true;
         }
-
         window.google.accounts.id.renderButton(containerRef.current, {
-          theme: "outline",
-          size: "large",
-          shape: "pill",
-          text,
-          width: 280,
+          theme: "outline", size: "large", shape: "pill", text, width: 280,
         });
         setStatus("ready");
       })
       .catch(() => { if (!cancelled) setStatus("error"); });
-
     return () => { cancelled = true; };
   }, []);
 
   return (
     <div>
       <div ref={containerRef} className="flex justify-center min-h-[44px]" />
-      {status === "loading" && (
-        <p className="ecw-fade-in text-[11px] text-neutral-400 text-center">Loading Google sign-in…</p>
-      )}
+      {status === "loading" && <p className="ecw-fade-in text-[11px] text-neutral-400 text-center">Loading Google sign-in…</p>}
       {status === "missing" && (
         <p className="ecw-fade-in text-[11px] font-semibold text-red-600 text-center">
           Google sign-in isn't configured. Set VITE_GOOGLE_CLIENT_ID in your .env file.
@@ -289,8 +242,6 @@ function GoogleSignInButton({ text = "signin_with", onSignedIn }) {
   );
 }
 
-// Dropdown for picking a school. Only schools the super admin has approved are
-// listed (they come from the server).
 function SchoolDropdown({ value, onChange, error, schools, loading }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef(null);
@@ -308,20 +259,17 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
   return (
     <div className="relative" ref={wrapRef}>
       <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className={`w-full flex items-center justify-between text-xs px-3 py-2.5 rounded-lg border bg-white text-left focus:outline-none transition-colors ${error ? "border-red-400" : "border-neutral-200 focus:border-green-400"}`}
+        type="button" onClick={() => setOpen((o) => !o)}
+        className={`w-full flex items-center justify-between text-xs px-3.5 py-3 rounded-xl border bg-white text-left focus:outline-none transition-colors ${error ? "border-red-400" : "border-neutral-200 focus:border-[#178754]"}`}
       >
         <span className={selected ? "text-neutral-800" : "text-neutral-400"}>
           {loading ? "Loading schools…" : selected ? selected.name : "Select your school"}
         </span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`shrink-0 transition-transform duration-200 ${open ? "rotate-180" : ""}`}>
-          <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <ChevronDown size={14} className={`shrink-0 transition-transform duration-200 ${open ? "rotate-180" : ""}`} />
       </button>
 
       {open && (
-        <div className="ecw-dropdown-pop absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-lg shadow-lg max-h-52 overflow-y-auto">
+        <div className="ecw-dropdown-pop absolute z-20 mt-1.5 w-full bg-white border border-neutral-200 rounded-xl shadow-lg max-h-52 overflow-y-auto">
           {schools.length === 0 && !loading && (
             <p className="px-3 py-3 text-[11px] text-neutral-400">
               No approved schools yet. Your school must be registered and approved first.
@@ -330,23 +278,15 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
           {schools.map((school) => {
             const checked = value === school.id;
             return (
-              <label
-                key={school.id}
-                className="flex items-center gap-2.5 px-3 py-2.5 text-xs hover:bg-neutral-50 cursor-pointer border-b border-neutral-50 last:border-b-0 transition-colors"
-              >
+              <label key={school.id} className="flex items-center gap-2.5 px-3 py-2.5 text-xs hover:bg-neutral-50 cursor-pointer border-b border-neutral-50 last:border-b-0 transition-colors">
                 <input
-                  type="checkbox"
-                  checked={checked}
+                  type="checkbox" checked={checked}
                   onChange={() => { onChange(school.id); setOpen(false); }}
                   className="w-3.5 h-3.5 accent-[#178754] shrink-0"
                 />
                 <span className="flex-1 text-neutral-700">{school.name}</span>
                 <span className="flex items-center gap-1 text-[10px] font-bold text-[#178754] shrink-0">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
-                    <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.6" />
-                    <path d="M9 12l2 2 4-4" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                  Verified
+                  <CheckCircle2 size={11} /> Verified
                 </span>
               </label>
             );
@@ -357,10 +297,9 @@ function SchoolDropdown({ value, onChange, error, schools, loading }) {
   );
 }
 
-// Shown once a Google account is attached to the registration/login form.
 function GoogleAccountChip({ account, onSwitch }) {
   return (
-    <div className="ecw-fade-in flex items-center gap-2.5 rounded-lg border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
+    <div className="ecw-fade-in flex items-center gap-2.5 rounded-xl border border-[#178754]/25 bg-[#EAF6EF] px-3 py-2.5">
       {account.picture ? (
         <img src={account.picture} alt="" referrerPolicy="no-referrer" className="w-8 h-8 rounded-full shrink-0 ring-1 ring-[#178754]/20" />
       ) : (
@@ -372,15 +311,52 @@ function GoogleAccountChip({ account, onSwitch }) {
         <p className="text-[11px] font-bold text-neutral-800 truncate">{account.name}</p>
         <p className="text-[10px] text-neutral-500 truncate">{account.email}</p>
       </div>
-      <button type="button" onClick={onSwitch} className="text-[10px] font-bold text-[#178754] hover:underline shrink-0">
-        Switch
+      <button type="button" onClick={onSwitch} className="text-[10px] font-bold text-[#178754] hover:underline shrink-0">Switch</button>
+    </div>
+  );
+}
+
+/* ---------------------------- Modal shell ---------------------------- */
+
+function ModalShell({ onClose, children, size = "max-w-md" }) {
+  return (
+    <div
+      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-[#0b1033]/60 backdrop-blur-sm px-4 py-6"
+      role="dialog" aria-modal="true"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className={`ecw-modal-pop ecw-body bg-white w-full ${size} rounded-3xl max-h-[90vh] overflow-y-auto shadow-2xl`}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function ModalHeader({ icon: Icon, eyebrow, title, onClose }) {
+  return (
+    <div className="sticky top-0 z-10 bg-white/95 backdrop-blur flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
+      <span className="w-11 h-11 shrink-0 rounded-2xl bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20">
+        <Icon className="w-5 h-5 text-[#178754]" aria-hidden="true" />
+      </span>
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] font-bold text-green-700">{eyebrow}</p>
+        <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mt-0.5 truncate">{title}</h3>
+      </div>
+      <button type="button" onClick={onClose} aria-label="Close" className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors">
+        <X size={16} />
       </button>
     </div>
   );
 }
 
-// Shared modal for login + registration, used by the student, teacher,
-// school-admin and super-admin flows.
+function ErrorBanner({ children }) {
+  return (
+    <div className="ecw-fade-in mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-xl px-3 py-2.5">
+      {children}
+    </div>
+  );
+}
+
 function AuthModal({
   role, mode, onClose, onSwitchMode, onRegisterSchool,
   registerForm, setRegisterForm,
@@ -388,10 +364,8 @@ function AuthModal({
   googleAccount, onGoogleSignedIn, onGoogleSwitch, schools, schoolsLoading,
 }) {
   const config = ROLE_CONFIG[role] || ROLE_CONFIG.student;
-  const RoleIcon = config.icon;
   const roleLabel = config.label;
   const canRegister = config.canRegister;
-  // Admins are signed in as soon as Google confirms the account.
   const autoSignIn = isAdminRole(role);
 
   const loginHint =
@@ -399,173 +373,129 @@ function AuthModal({
       ? "Sign in with the Google account authorized for platform administration."
       : role === "schoolAdmin"
         ? "Sign in with the Google account you registered your school with. Your school must be approved first — we email your school code as soon as it is."
-        : "Sign in with the Google account you registered with. We only ever use it to confirm your email — no password to remember.";
+        : "Sign in with the Google account you registered with. We only use it to confirm your email — no password to remember.";
 
   return (
-    <div
-      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
-      role="dialog" aria-modal="true"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="sticky top-0 bg-white flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
-          <span className="w-11 h-11 shrink-0 rounded-full bg-[#EAF6EF] flex items-center justify-center overflow-hidden ring-1 ring-[#178754]/20">
-            <RoleIcon className="w-5 h-5 text-[#178754]" aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-green-700">{roleLabel} account</p>
-            <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mt-0.5 truncate">
-              {mode === "login" ? `Sign in as ${roleLabel.toLowerCase()}` : `Create your ${roleLabel.toLowerCase()} account`}
-            </h3>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
-          </button>
-        </div>
+    <ModalShell onClose={onClose}>
+      <ModalHeader
+        icon={config.icon} eyebrow={`${roleLabel} account`} onClose={onClose}
+        title={mode === "login" ? `Sign in as ${roleLabel.toLowerCase()}` : `Create your ${roleLabel.toLowerCase()} account`}
+      />
+      <div className="px-5 sm:px-6 py-5">
+        {formError && <ErrorBanner>{formError}</ErrorBanner>}
 
-        <div className="px-5 sm:px-6 py-5">
-          {formError && (
-            <div className="ecw-fade-in mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {formError}
-            </div>
-          )}
+        {mode === "login" ? (
+          <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
+            <p className="text-[11px] text-neutral-500 -mt-1">{loginHint}</p>
 
-          {mode === "login" ? (
-            <form onSubmit={onSubmitLogin} className="flex flex-col gap-3">
-              <p className="text-[11px] text-neutral-500 -mt-1">{loginHint}</p>
+            {googleAccount ? (
+              <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
+            ) : (
+              <GoogleSignInButton onSignedIn={onGoogleSignedIn} />
+            )}
 
+            {autoSignIn ? (
+              authSubmitting && <p className="ecw-fade-in text-center text-[11px] font-semibold text-[#178754]">Signing you in…</p>
+            ) : (
+              <button
+                type="submit" disabled={!googleAccount || authSubmitting}
+                className="w-full mt-1 py-3 text-white font-bold text-xs rounded-xl transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {authSubmitting ? "Signing in…" : "Continue to dashboard"}
+              </button>
+            )}
+
+            {canRegister && (
+              <p className="text-center text-[11px] text-neutral-500 mt-1">
+                Don't have an account?{" "}
+                <button type="button" onClick={() => onSwitchMode("register")} className="font-bold text-[#178754] hover:underline">
+                  Register as {roleLabel.toLowerCase()}
+                </button>
+              </p>
+            )}
+
+            {role === "schoolAdmin" && (
+              <p className="text-center text-[11px] text-neutral-500 mt-1">
+                New school?{" "}
+                <button type="button" onClick={onRegisterSchool} className="font-bold text-[#178754] hover:underline">Register your school</button>
+              </p>
+            )}
+          </form>
+        ) : (
+          <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
+            <div>
+              <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Your Google account</label>
               {googleAccount ? (
                 <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
               ) : (
-                <GoogleSignInButton onSignedIn={onGoogleSignedIn} />
+                <GoogleSignInButton onSignedIn={onGoogleSignedIn} text="signup_with" />
               )}
-
-              {autoSignIn ? (
-                authSubmitting && (
-                  <p className="ecw-fade-in text-center text-[11px] font-semibold text-[#178754]">Signing you in…</p>
-                )
-              ) : (
-                <button
-                  type="submit"
-                  disabled={!googleAccount || authSubmitting}
-                  className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)] disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {authSubmitting ? "Signing in…" : "Continue to dashboard"}
-                </button>
-              )}
-
-              {canRegister && (
-                <p className="text-center text-[11px] text-neutral-500 mt-1">
-                  Don't have an account?{" "}
-                  <button type="button" onClick={() => onSwitchMode("register")} className="font-bold text-[#178754] hover:underline">
-                    Register as {roleLabel.toLowerCase()}
-                  </button>
-                </p>
-              )}
-
-              {role === "schoolAdmin" && (
-                <p className="text-center text-[11px] text-neutral-500 mt-1">
-                  New school?{" "}
-                  <button type="button" onClick={onRegisterSchool} className="font-bold text-[#178754] hover:underline">
-                    Register your school
-                  </button>
-                </p>
-              )}
-            </form>
-          ) : (
-            <form onSubmit={onSubmitRegister} className="flex flex-col gap-3">
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Your Google account</label>
-                {googleAccount ? (
-                  <GoogleAccountChip account={googleAccount} onSwitch={onGoogleSwitch} />
-                ) : (
-                  <GoogleSignInButton onSignedIn={onGoogleSignedIn} text="signup_with" />
-                )}
-                <p className="text-[10px] text-neutral-400 mt-1">
-                  We only take your name and email from Google — nothing else, and no password is stored.
-                </p>
-              </div>
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Full name</label>
-                <input
-                  type="text" required disabled={!googleAccount} value={registerForm.fullName}
-                  onChange={(e) => setRegisterForm((f) => ({ ...f, fullName: e.target.value }))}
-                  placeholder="Full name"
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed transition-colors"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School</label>
-                <SchoolDropdown
-                  value={registerForm.school}
-                  onChange={(school) => setRegisterForm((f) => ({ ...f, school }))}
-                  schools={schools} loading={schoolsLoading}
-                />
-              </div>
-              <div>
-                <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School code</label>
-                <input
-                  type="text" required disabled={!googleAccount} value={registerForm.schoolCode}
-                  onChange={(e) => setRegisterForm((f) => ({ ...f, schoolCode: e.target.value }))}
-                  placeholder={`Given by your school (e.g. ${DEFAULT_SCHOOL_CODE})`}
-                  className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 disabled:bg-neutral-50 disabled:cursor-not-allowed transition-colors"
-                />
-              </div>
-              <button
-                type="submit" disabled={!googleAccount || authSubmitting}
-                className="w-full mt-2 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {authSubmitting ? "Checking code…" : "Submit for school approval"}
-              </button>
-              <p className="text-center text-[11px] text-neutral-500 mt-1">
-                Already have an account?{" "}
-                <button type="button" onClick={() => onSwitchMode("login")} className="font-bold text-[rgb(22,32,111)] hover:underline">
-                  Sign in
-                </button>
+              <p className="text-[10px] text-neutral-400 mt-1">
+                We only take your name and email from Google — nothing else, and no password is stored.
               </p>
-            </form>
-          )}
-        </div>
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-neutral-600 mb-1 block">Full name</label>
+              <input
+                type="text" required disabled={!googleAccount} value={registerForm.fullName}
+                onChange={(e) => setRegisterForm((f) => ({ ...f, fullName: e.target.value }))}
+                placeholder="Full name" className={INPUT}
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School</label>
+              <SchoolDropdown
+                value={registerForm.school}
+                onChange={(school) => setRegisterForm((f) => ({ ...f, school }))}
+                schools={schools} loading={schoolsLoading}
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-neutral-600 mb-1 block">School code</label>
+              <input
+                type="text" required disabled={!googleAccount} value={registerForm.schoolCode}
+                onChange={(e) => setRegisterForm((f) => ({ ...f, schoolCode: e.target.value }))}
+                placeholder={`Given by your school (e.g. ${DEFAULT_SCHOOL_CODE})`} className={INPUT}
+              />
+            </div>
+            <button
+              type="submit" disabled={!googleAccount || authSubmitting}
+              className="w-full mt-2 py-3 text-white font-bold text-xs rounded-xl transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {authSubmitting ? "Checking code…" : "Submit for school approval"}
+            </button>
+            <p className="text-center text-[11px] text-neutral-500 mt-1">
+              Already have an account?{" "}
+              <button type="button" onClick={() => onSwitchMode("login")} className="font-bold text-[rgb(22,32,111)] hover:underline">Sign in</button>
+            </p>
+          </form>
+        )}
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
-// Shown right after a student/teacher submits registration.
 function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
   return (
-    <div
-      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
-      role="dialog" aria-modal="true"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
-        <span className="w-12 h-12 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-3 ring-1 ring-amber-200">
-          <Clock3 className="w-5 h-5 text-amber-600" />
+    <ModalShell onClose={onClose} size="max-w-sm">
+      <div className="px-6 py-8 text-center">
+        <span className="w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-4 ring-1 ring-amber-200">
+          <Clock3 className="w-6 h-6 text-amber-600" />
         </span>
-        <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
-        <p className="text-xs text-neutral-500 leading-relaxed mb-5">
+        <h3 className="ecw-heading text-lg font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
+        <p className="text-xs text-neutral-500 leading-relaxed mb-6">
           Your {roleLabel.toLowerCase()} account has been sent to {schoolName || "your school"} for approval.
           Once approved, sign in with the same Google account to continue.
         </p>
-        <button
-          type="button" onClick={onClose}
-          className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 active:scale-[0.98] transition-all bg-[rgb(22,32,111)]"
-        >
+        <button type="button" onClick={onClose} className="w-full py-3 text-white font-bold text-xs rounded-xl hover:opacity-90 active:scale-[0.98] transition-all bg-[rgb(22,32,111)]">
           Got it
         </button>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
-// ------------------------------------------------------------------
-// Teacher classes/subjects step — shown right after a teacher's Google
-// sign-in succeeds, before anything navigates to the dashboard.
-// Classes come from the real server (returned by GET /api/teacher/me as
-// part of the login flow), and any class/subject the teacher adds is saved
-// through the real POST /api/teacher/assignments endpoint.
-// ------------------------------------------------------------------
+/* Teacher classes/subjects step — shown right after a teacher's Google sign-in. */
 function TeacherClassStepModal({
   step, setStep, onPickExisting, onSwitchToAdd, onBackToPick, onSubmitAdd, onClose,
   onToggleClass, onToggleAllClasses, onAddCustomClass,
@@ -578,161 +508,279 @@ function TeacherClassStepModal({
   const comboCount = form.classIds.size * form.subjects.size;
 
   return (
-    <div
-      className="ecw-modal-backdrop fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 px-4 py-6"
-      role="dialog" aria-modal="true"
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="ecw-modal-pop ecw-body bg-white w-full max-w-md rounded-2xl max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="sticky top-0 bg-white flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
-          <span className="w-11 h-11 shrink-0 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20">
-            <GraduationCap className="w-5 h-5 text-[#178754]" aria-hidden="true" />
-          </span>
-          <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-wide text-green-700">Teacher sign-in</p>
-            <h3 className="ecw-heading text-base font-extrabold text-neutral-900 mt-0.5 truncate">
-              {mode === "pick" ? "Your classes" : "Which classes & subjects?"}
-            </h3>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="w-8 h-8 shrink-0 rounded-full flex items-center justify-center text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 transition-colors">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" /></svg>
-          </button>
-        </div>
+    <ModalShell onClose={onClose}>
+      <ModalHeader
+        icon={GraduationCap} eyebrow="Teacher sign-in" onClose={onClose}
+        title={mode === "pick" ? "Your classes" : "Which classes & subjects?"}
+      />
+      <div className="px-5 sm:px-6 py-5">
+        {error && <ErrorBanner>{error}</ErrorBanner>}
 
-        <div className="px-5 sm:px-6 py-5">
-          {error && (
-            <div className="ecw-fade-in mb-4 text-[11px] font-semibold text-red-700 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
-              {error}
+        {mode === "pick" ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-[11px] text-neutral-500 -mt-1">
+              These are the classes and subjects linked to your account. Continue to your dashboard, or add more if something's missing.
+            </p>
+            <div className="flex flex-col gap-2">
+              {assignments.map((a) => (
+                <div key={a.id} className="w-full flex items-center justify-between gap-3 rounded-xl border border-neutral-200 px-3.5 py-2.5">
+                  <span>
+                    <span className="block text-xs font-bold text-neutral-800">{a.className}</span>
+                    <span className="block text-[11px] text-neutral-500">{a.subject}</span>
+                  </span>
+                </div>
+              ))}
             </div>
-          )}
+            <button
+              type="button" onClick={() => onPickExisting(assignments)}
+              className="w-full mt-1 py-3 text-white font-bold text-xs rounded-xl transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]"
+            >
+              Continue to dashboard
+            </button>
+            <button type="button" onClick={onSwitchToAdd} className="text-center text-[11px] font-bold text-[#178754] hover:underline mt-1">
+              + Add another class or subject
+            </button>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            <p className="text-[11px] text-neutral-500 -mt-1">
+              Tick every class you teach, and every subject you teach — we'll link you to each class/subject pair.
+              You can always add more later at sign-in.
+            </p>
 
-          {mode === "pick" ? (
-            <div className="flex flex-col gap-3">
-              <p className="text-[11px] text-neutral-500 -mt-1">
-                These are the classes and subjects linked to your account. Continue to your
-                dashboard, or add more if something's missing.
-              </p>
-              <div className="flex flex-col gap-2">
-                {assignments.map((a) => (
-                  <div key={a.id} className="w-full flex items-center justify-between gap-3 rounded-lg border border-neutral-200 px-3.5 py-2.5">
-                    <span>
-                      <span className="block text-xs font-bold text-neutral-800">{a.className}</span>
-                      <span className="block text-[11px] text-neutral-500">{a.subject}</span>
-                    </span>
-                  </div>
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[11px] font-bold text-neutral-600">Classes you teach</label>
+                {classes.length > 0 && (
+                  <button type="button" onClick={onToggleAllClasses} className="text-[10px] font-bold text-[#178754] hover:underline">
+                    {allClassesSelected ? "Clear all" : "Select all"}
+                  </button>
+                )}
+              </div>
+              <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-xl p-2.5 flex flex-col gap-1.5">
+                {classes.length === 0 ? (
+                  <p className="text-[11px] text-neutral-400 px-1 py-1">No classes yet — add one below.</p>
+                ) : classes.map((c) => (
+                  <label key={c.id} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
+                    <input type="checkbox" checked={form.classIds.has(c.id)} onChange={() => onToggleClass(c.id)} className="w-3.5 h-3.5 accent-[#178754] shrink-0" />
+                    {c.name}
+                  </label>
                 ))}
               </div>
-              <button
-                type="button" onClick={() => onPickExisting(assignments)}
-                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]"
-              >
-                Continue to dashboard
-              </button>
-              <button type="button" onClick={onSwitchToAdd} className="text-center text-[11px] font-bold text-[#178754] hover:underline mt-1">
-                + Add another class or subject
-              </button>
+              <div className="flex gap-2 mt-2">
+                <input
+                  value={form.customClass}
+                  onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customClass: e.target.value } } : s))}
+                  placeholder="e.g. S4 MCB" className={`${INPUT} !py-2 flex-1`}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAddCustomClass(); } }}
+                />
+                <button type="button" onClick={onAddCustomClass} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">Add</button>
+              </div>
             </div>
-          ) : (
-            <div className="flex flex-col gap-4">
-              <p className="text-[11px] text-neutral-500 -mt-1">
-                Tick every class you teach, and every subject you teach — we'll link you to each
-                class/subject pair. You can always add more later at sign-in.
-              </p>
 
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[11px] font-bold text-neutral-600">Classes you teach</label>
-                  {classes.length > 0 && (
-                    <button type="button" onClick={onToggleAllClasses} className="text-[10px] font-bold text-[#178754] hover:underline">
-                      {allClassesSelected ? "Clear all" : "Select all"}
-                    </button>
-                  )}
-                </div>
-                <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2.5 flex flex-col gap-1.5">
-                  {classes.length === 0 ? (
-                    <p className="text-[11px] text-neutral-400 px-1 py-1">No classes yet — add one below.</p>
-                  ) : classes.map((c) => (
-                    <label key={c.id} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
-                      <input
-                        type="checkbox" checked={form.classIds.has(c.id)}
-                        onChange={() => onToggleClass(c.id)}
-                        className="w-3.5 h-3.5 accent-[#178754] shrink-0"
-                      />
-                      {c.name}
-                    </label>
-                  ))}
-                </div>
-                <div className="flex gap-2 mt-2">
-                  <input
-                    value={form.customClass}
-                    onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customClass: e.target.value } } : s))}
-                    placeholder="e.g. S4 MCB"
-                    className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAddCustomClass(); } }}
-                  />
-                  <button type="button" onClick={onAddCustomClass} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">
-                    Add
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-[11px] font-bold text-neutral-600">Subjects you teach</label>
-                  <button type="button" onClick={onToggleAllSubjects} className="text-[10px] font-bold text-[#178754] hover:underline">
-                    {allSubjectsSelected ? "Clear all" : "Select all"}
-                  </button>
-                </div>
-                <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-lg p-2.5 flex flex-col gap-1.5">
-                  {allSubjectChoices.map((s) => (
-                    <label key={s} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
-                      <input
-                        type="checkbox" checked={form.subjects.has(s)}
-                        onChange={() => onToggleSubject(s)}
-                        className="w-3.5 h-3.5 accent-[#178754] shrink-0"
-                      />
-                      {s}
-                    </label>
-                  ))}
-                </div>
-                <div className="flex gap-2 mt-2">
-                  <input
-                    value={form.customSubject}
-                    onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customSubject: e.target.value } } : s))}
-                    placeholder="Other subject not listed"
-                    className="flex-1 text-xs px-2.5 py-1.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400"
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAddCustomSubject(); } }}
-                  />
-                  <button type="button" onClick={onAddCustomSubject} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">
-                    Add
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="button" disabled={submitting || form.classIds.size === 0 || form.subjects.size === 0}
-                onClick={onSubmitAdd}
-                className="w-full mt-1 py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {submitting
-                  ? "Saving…"
-                  : comboCount > 0
-                    ? `Save ${comboCount} assignment${comboCount === 1 ? "" : "s"} & continue`
-                    : "Pick at least one class and subject"}
-              </button>
-
-              {assignments.length > 0 && (
-                <button type="button" onClick={onBackToPick} className="text-center text-[11px] font-bold text-[rgb(22,32,111)] hover:underline">
-                  Back to my classes
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-[11px] font-bold text-neutral-600">Subjects you teach</label>
+                <button type="button" onClick={onToggleAllSubjects} className="text-[10px] font-bold text-[#178754] hover:underline">
+                  {allSubjectsSelected ? "Clear all" : "Select all"}
                 </button>
-              )}
+              </div>
+              <div className="max-h-36 overflow-y-auto border border-neutral-200 rounded-xl p-2.5 flex flex-col gap-1.5">
+                {allSubjectChoices.map((s) => (
+                  <label key={s} className="flex items-center gap-2 text-xs text-neutral-700 cursor-pointer">
+                    <input type="checkbox" checked={form.subjects.has(s)} onChange={() => onToggleSubject(s)} className="w-3.5 h-3.5 accent-[#178754] shrink-0" />
+                    {s}
+                  </label>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <input
+                  value={form.customSubject}
+                  onChange={(e) => setStep((s) => (s ? { ...s, form: { ...s.form, customSubject: e.target.value } } : s))}
+                  placeholder="Other subject not listed" className={`${INPUT} !py-2 flex-1`}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onAddCustomSubject(); } }}
+                />
+                <button type="button" onClick={onAddCustomSubject} className="text-[11px] font-bold text-[#178754] hover:underline shrink-0">Add</button>
+              </div>
             </div>
-          )}
-        </div>
+
+            <button
+              type="button" disabled={submitting || form.classIds.size === 0 || form.subjects.size === 0}
+              onClick={onSubmitAdd}
+              className="w-full mt-1 py-3 text-white font-bold text-xs rounded-xl transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {submitting
+                ? "Saving…"
+                : comboCount > 0
+                  ? `Save ${comboCount} assignment${comboCount === 1 ? "" : "s"} & continue`
+                  : "Pick at least one class and subject"}
+            </button>
+
+            {assignments.length > 0 && (
+              <button type="button" onClick={onBackToPick} className="text-center text-[11px] font-bold text-[rgb(22,32,111)] hover:underline">
+                Back to my classes
+              </button>
+            )}
+          </div>
+        )}
       </div>
-    </div>
+    </ModalShell>
   );
 }
+
+/* ============================================================================
+   NAVBAR
+   Three separate pieces floating on one row: logo chip | links pill | actions.
+   "Dashboards" is one dropdown grouped by audience, so the bar stays short
+   and every role (student, teacher, school admin, super admin) is one click
+   away.
+   ============================================================================ */
+
+function Navbar({ onGetStarted, onOpenAuth, loading }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dashOpen, setDashOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const dashRef = useRef(null);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 12);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    const close = (e) => { if (dashRef.current && !dashRef.current.contains(e.target)) setDashOpen(false); };
+    const esc = (e) => { if (e.key === "Escape") { setDashOpen(false); setMenuOpen(false); } };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", close); document.removeEventListener("keydown", esc); };
+  }, []);
+
+  const groups = [...new Set(DASHBOARDS.map((d) => d.group))];
+  const pick = (role) => { setDashOpen(false); setMenuOpen(false); onOpenAuth(role, "login"); };
+  const linkCls = "px-3.5 py-2 rounded-full text-[13px] font-semibold text-neutral-600 hover:text-[#178754] hover:bg-[#EAF6EF] transition-colors";
+
+  return (
+    <header className="fixed top-3 sm:top-4 inset-x-0 z-50 px-3 sm:px-6 pointer-events-none">
+      <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
+        {/* logo chip */}
+        <a href="#home" className={`pointer-events-auto flex items-center gap-2.5 bg-white rounded-full pl-1.5 pr-4 py-1.5 border border-neutral-200/80 transition-shadow ${scrolled ? "shadow-lg" : "shadow-sm"}`}>
+          <span className="w-9 h-9 rounded-full bg-[#EAF6EF] overflow-hidden ring-1 ring-[#178754]/20 shrink-0">
+            <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
+          </span>
+          <span className="ecw-heading font-extrabold text-[15px] text-neutral-900 leading-none">ESMS</span>
+        </a>
+
+        {/* centre pill with the links */}
+        <nav className={`pointer-events-auto hidden lg:flex items-center gap-0.5 bg-white/90 backdrop-blur-xl rounded-full p-1.5 border border-neutral-200/80 ecw-body transition-shadow ${scrolled ? "shadow-lg" : "shadow-sm"}`}>
+          <a href="#services" className={linkCls}>Services</a>
+          <a href="#how-it-works" className={linkCls}>How it works</a>
+
+          <div className="relative" ref={dashRef}>
+            <button
+              type="button" onClick={() => setDashOpen((o) => !o)} aria-expanded={dashOpen} aria-haspopup="true"
+              className={`${linkCls} inline-flex items-center gap-1 ${dashOpen ? "bg-[#EAF6EF] text-[#178754]" : ""}`}
+            >
+              Dashboards <ChevronDown size={13} className={`transition-transform ${dashOpen ? "rotate-180" : ""}`} />
+            </button>
+            {dashOpen && (
+              <div className="ecw-dropdown-pop absolute left-1/2 -translate-x-1/2 top-[calc(100%+14px)] w-[520px] bg-white rounded-3xl border border-neutral-200 shadow-2xl p-4 grid grid-cols-2 gap-4">
+                {groups.map((g) => (
+                  <div key={g}>
+                    <p className="text-[10px] font-bold text-neutral-400 px-2 mb-1.5">{g}</p>
+                    <div className="flex flex-col gap-1">
+                      {DASHBOARDS.filter((d) => d.group === g).map((d) => {
+                        const Icon = ROLE_CONFIG[d.role].icon;
+                        return (
+                          <button key={d.role} type="button" onClick={() => pick(d.role)} className="group flex items-center gap-3 text-left rounded-2xl p-2.5 hover:bg-neutral-50 transition-colors">
+                            <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${d.tint}14` }}>
+                              <Icon size={18} style={{ color: d.tint }} />
+                            </span>
+                            <span className="min-w-0">
+                              <span className="block ecw-heading text-[13px] font-bold text-neutral-900">{d.title}</span>
+                              <span className="block text-[11px] text-neutral-500 truncate">{d.short}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button" onClick={() => { setDashOpen(false); onGetStarted(); }}
+                  className="col-span-2 flex items-center justify-between rounded-2xl bg-[rgb(22,32,111)] text-white px-4 py-3 hover:opacity-95 transition-opacity"
+                >
+                  <span className="text-left">
+                    <span className="block ecw-heading text-[13px] font-bold">New school?</span>
+                    <span className="block text-[11px] text-white/70">Register it and get your school code</span>
+                  </span>
+                  <ArrowUpRight size={16} />
+                </button>
+              </div>
+            )}
+          </div>
+
+          <a href="#team" className={linkCls}>Team</a>
+          <a href="#contact" className={linkCls}>Contact</a>
+        </nav>
+
+        {/* actions */}
+        <div className="pointer-events-auto flex items-center gap-2">
+          <button
+            type="button" onClick={onGetStarted} disabled={loading}
+            className="hidden sm:inline-flex items-center gap-2 text-[13px] font-bold text-white px-5 py-3 rounded-full bg-[#178754] hover:bg-[#136040] shadow-md shadow-[#178754]/25 transition-colors disabled:opacity-80 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <>
+                <svg className="w-4 h-4 icon-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeDasharray="30 20" /></svg>
+                Loading…
+              </>
+            ) : "Get started"}
+          </button>
+          <button
+            type="button" onClick={() => setMenuOpen((o) => !o)} aria-label="Menu" aria-expanded={menuOpen}
+            className="lg:hidden w-11 h-11 rounded-full bg-white border border-neutral-200 shadow-sm flex items-center justify-center text-neutral-700"
+          >
+            {menuOpen ? <X size={18} /> : <Menu size={18} />}
+          </button>
+        </div>
+      </div>
+
+      {/* mobile sheet */}
+      {menuOpen && (
+        <div className="pointer-events-auto lg:hidden ecw-dropdown-pop max-w-6xl mx-auto mt-2 bg-white rounded-3xl border border-neutral-200 shadow-2xl p-4 ecw-body max-h-[78vh] overflow-y-auto">
+          <div className="grid grid-cols-2 gap-1 mb-3">
+            {NAV_LINKS.map((l) => (
+              <a key={l.href} href={l.href} onClick={() => setMenuOpen(false)} className="px-3 py-2.5 rounded-xl text-[13px] font-semibold text-neutral-700 hover:bg-neutral-50">{l.label}</a>
+            ))}
+          </div>
+          {groups.map((g) => (
+            <div key={g} className="mb-3">
+              <p className="text-[10px] font-bold text-neutral-400 px-1 mb-1.5">{g}</p>
+              <div className="grid grid-cols-2 gap-2">
+                {DASHBOARDS.filter((d) => d.group === g).map((d) => {
+                  const Icon = ROLE_CONFIG[d.role].icon;
+                  return (
+                    <button key={d.role} type="button" onClick={() => pick(d.role)} className="flex items-center gap-2 rounded-xl border border-neutral-100 p-2.5 text-left">
+                      <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${d.tint}14` }}><Icon size={15} style={{ color: d.tint }} /></span>
+                      <span className="text-[12px] font-bold text-neutral-800 leading-tight">{d.title}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          <button type="button" onClick={() => { setMenuOpen(false); onGetStarted(); }} className="w-full py-3 rounded-xl bg-[#178754] text-white text-[13px] font-bold">Register your school</button>
+        </div>
+      )}
+    </header>
+  );
+}
+
+/* ============================================================================
+   PAGE
+   ============================================================================ */
 
 export default function Home() {
   const navigate = useNavigate();
@@ -741,7 +789,6 @@ export default function Home() {
   const [loadingStep, setLoadingStep] = useState(0);
   const [adCarouselIndex, setAdCarouselIndex] = useState(0);
 
-  // Approved schools come from the server (no codes, no contact details).
   const [schools, setSchools] = useState([]);
   const [schoolsLoading, setSchoolsLoading] = useState(true);
 
@@ -763,20 +810,17 @@ export default function Home() {
     return () => { cancelled = true; };
   }, []);
 
-  // Login / registration modal state.
   const [authView, setAuthView] = useState(null);
   const [formError, setFormError] = useState("");
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [registerForm, setRegisterForm] = useState({ fullName: "", email: "", school: "", schoolCode: "" });
 
   const [googleAccount, setGoogleAccount] = useState(null);
-  const [pendingApproval, setPendingApproval] = useState(null); // { roleLabel, schoolName } | null
-
+  const [pendingApproval, setPendingApproval] = useState(null);
   const [teacherStep, setTeacherStep] = useState(null);
 
   const isOverlayActive = isRegisterLoading || Boolean(authView) || Boolean(pendingApproval) || Boolean(teacherStep);
 
-  // Drives the animated checklist in the "connecting" overlay.
   useEffect(() => {
     if (!isRegisterLoading) { setLoadingStep(0); return; }
     const interval = setInterval(() => {
@@ -788,24 +832,16 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [isRegisterLoading]);
 
-  // Drives the hero browser-mockup carousel — crossfades through AD_SLIDES
-  // on a timer. Purely visual; see AD_SLIDES above.
   useEffect(() => {
-    const interval = setInterval(() => {
-      setAdCarouselIndex((prev) => (prev + 1) % AD_SLIDES.length);
-    }, 3800);
+    const interval = setInterval(() => setAdCarouselIndex((prev) => (prev + 1) % AD_SLIDES.length), 3800);
     return () => clearInterval(interval);
   }, []);
 
-  // Drives the fill-in animation on the "live dashboard" stat rings once
-  // they scroll into view.
   const [statsRef, statsVisible] = useReveal({ threshold: 0.4 });
 
   const handleNavigate = (path, state) => {
     setIsRegisterLoading(true);
-    setTimeout(() => {
-      navigate(path, state ? { state } : undefined);
-    }, 1600);
+    setTimeout(() => { navigate(path, state ? { state } : undefined); }, 1600);
   };
 
   const openAuth = (role, mode) => {
@@ -824,11 +860,7 @@ export default function Home() {
     setAuthView((prev) => (prev ? { ...prev, mode } : prev));
   };
 
-  // ------------------------------------------------------------------
-  // School admin + super admin sign-in.
-  // The Google token goes to the server, which verifies it with Google and
-  // decides whether this account is allowed in.
-  // ------------------------------------------------------------------
+  // ---- School admin + super admin sign-in (token verified server-side) ----
   async function signInAdmin(role, account) {
     setFormError("");
     setAuthSubmitting(true);
@@ -865,20 +897,7 @@ export default function Home() {
     }
   }
 
-  // ------------------------------------------------------------------
-  // Student / teacher sign-in.
-  // Hits the REAL backend (mounted at /api/teacher and /api/student), the
-  // same server Teacher.jsx talks to. The token stored afterwards is the
-  // server's real session token, so every later /api/teacher/* call
-  // succeeds instead of bouncing back to "/" with a 401.
-  //
-  // FIX: the token used to be saved under one shared USER_SESSION_KEY no
-  // matter which role signed in, while Teacher.jsx/Student.jsx each read
-  // from their OWN role-specific key. That meant getSession() on the
-  // dashboard side never found the token this function had just saved. It
-  // now writes to MEMBER_SESSION_KEY[role], matching what each dashboard
-  // actually reads.
-  // ------------------------------------------------------------------
+  // ---- Student / teacher sign-in (real backend, role-specific session key) ----
   async function signInMember(role, account) {
     setFormError("");
     setAuthSubmitting(true);
@@ -906,12 +925,7 @@ export default function Home() {
         return;
       }
 
-      // Hydrate the full profile with the real, server-issued token — this
-      // is exactly what Teacher.jsx does on every load, so doing it here
-      // too confirms the token actually works before we navigate anywhere.
-      const meRes = await fetch(`${API_BASE}/api/${base}/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const meRes = await fetch(`${API_BASE}/api/${base}/me`, { headers: { Authorization: `Bearer ${token}` } });
       const me = await meRes.json().catch(() => ({}));
       if (!meRes.ok || !me.success) {
         setFormError(me.message || "Signed in, but your profile could not be loaded. Please try again.");
@@ -937,11 +951,7 @@ export default function Home() {
     setFormError("");
     setGoogleAccount(account);
     setRegisterForm((f) => ({ ...f, fullName: f.fullName || account.name, email: account.email }));
-
-    // Admins don't need a second click: sign in as soon as Google confirms them.
-    if (authView?.mode === "login" && isAdminRole(authView.role)) {
-      signInAdmin(authView.role, account);
-    }
+    if (authView?.mode === "login" && isAdminRole(authView.role)) signInAdmin(authView.role, account);
   };
 
   const handleGoogleSwitch = () => {
@@ -950,30 +960,19 @@ export default function Home() {
     window.google?.accounts?.id?.disableAutoSelect?.();
   };
 
-  // ------------------------------------------------------------------
-  // Teacher classes/subjects step
-  // `classes` comes straight from GET /api/teacher/me (the same list the
-  // dashboard's Settings page shows), so nothing here is invented client-side.
-  // ------------------------------------------------------------------
-
+  // ---- Teacher classes/subjects step ----
   const blankAddForm = () => ({ classIds: new Set(), subjects: new Set(), customSubject: "", customClass: "" });
 
   const startTeacherClassStep = (token, teacher, assignments, classes) => {
-    if (assignments.length === 0) {
-      setTeacherStep({ token, teacher, mode: "add", assignments, classes, form: blankAddForm(), submitting: false, error: "" });
-    } else {
-      setTeacherStep({ token, teacher, mode: "pick", assignments, classes, form: blankAddForm(), submitting: false, error: "" });
-    }
+    setTeacherStep({
+      token, teacher, mode: assignments.length === 0 ? "add" : "pick",
+      assignments, classes, form: blankAddForm(), submitting: false, error: "",
+    });
   };
 
   const completeTeacherLogin = (token, teacher, assignments) => {
     setTeacherStep(null);
-    handleNavigate("/dashboard/teacher", {
-      token,
-      email: teacher?.email,
-      name: teacher?.fullName,
-      assignments,
-    });
+    handleNavigate("/dashboard/teacher", { token, email: teacher?.email, name: teacher?.fullName, assignments });
   };
 
   const handlePickExisting = (assignments) => {
@@ -981,10 +980,7 @@ export default function Home() {
     completeTeacherLogin(teacherStep.token, teacherStep.teacher, assignments);
   };
 
-  const handleSwitchTeacherStepToAdd = () => {
-    setTeacherStep((s) => (s ? { ...s, mode: "add", error: "", form: blankAddForm() } : s));
-  };
-
+  const handleSwitchTeacherStepToAdd = () => setTeacherStep((s) => (s ? { ...s, mode: "add", error: "", form: blankAddForm() } : s));
   const handleBackToPickAssignment = () => setTeacherStep((s) => (s ? { ...s, mode: "pick", error: "" } : s));
 
   const handleToggleClass = (classId) => {
@@ -1005,9 +1001,6 @@ export default function Home() {
     });
   };
 
-  // A teacher can type a class name that doesn't exist yet — the server's
-  // POST /api/teacher/assignments creates it automatically, so we only need
-  // a local placeholder to check it in the UI before saving.
   const handleAddCustomClass = () => {
     setTeacherStep((s) => {
       if (!s) return s;
@@ -1052,10 +1045,6 @@ export default function Home() {
     });
   };
 
-  // Saves every chosen class/subject pair through the REAL
-  // POST /api/teacher/assignments endpoint (the same one Settings uses),
-  // authenticated with the real session token, then continues to the
-  // dashboard.
   const handleSubmitNewAssignment = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
     if (!teacherStep) return;
@@ -1065,9 +1054,7 @@ export default function Home() {
       return;
     }
 
-    const classNames = [...classIds]
-      .map((id) => teacherStep.classes.find((c) => c.id === id)?.name)
-      .filter(Boolean);
+    const classNames = [...classIds].map((id) => teacherStep.classes.find((c) => c.id === id)?.name).filter(Boolean);
     const pairs = classNames.flatMap((className) => [...subjects].map((subject) => ({ className, subject })));
 
     setTeacherStep((s) => (s ? { ...s, submitting: true, error: "" } : s));
@@ -1081,9 +1068,7 @@ export default function Home() {
           body: JSON.stringify(pair),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-          throw new Error(data.message || `Could not add ${pair.className} · ${pair.subject}.`);
-        }
+        if (!res.ok || !data.success) throw new Error(data.message || `Could not add ${pair.className} · ${pair.subject}.`);
         latestAssignments = data.assignments;
       }
       completeTeacherLogin(teacherStep.token, teacherStep.teacher, latestAssignments);
@@ -1092,39 +1077,21 @@ export default function Home() {
     }
   };
 
-  // FIX: this used to remove the shared USER_SESSION_KEY, which — now that
-  // sign-in writes to a role-specific key — would no longer actually clear
-  // anything for a teacher who backs out of the class-picker step, leaving a
-  // half-finished login token behind. It now clears the teacher's own key.
   const closeTeacherStep = () => {
     setTeacherStep(null);
     localStorage.removeItem(MEMBER_SESSION_KEY.teacher);
   };
 
-  // ------------------------------------------------------------------
-  // Login submit
-  // ------------------------------------------------------------------
   const handleLoginSubmit = (e) => {
     e.preventDefault();
     setFormError("");
     const role = authView?.role;
-
     if (!googleAccount) { setFormError("Continue with Google first."); return; }
-
-    if (isAdminRole(role)) {
-      signInAdmin(role, googleAccount);
-    } else {
-      signInMember(role, googleAccount);
-    }
+    if (isAdminRole(role)) signInAdmin(role, googleAccount);
+    else signInMember(role, googleAccount);
   };
 
-  // ------------------------------------------------------------------
-  // Student / teacher registration
-  // The school code is checked by the server, then the account itself is
-  // created server-side (pending the school's approval) via
-  // POST /api/{role}/register. There is no more client-side auto-approve:
-  // approval must come from the school admin, same as school approval does.
-  // ------------------------------------------------------------------
+  // ---- Student / teacher registration (pending school approval) ----
   const handleRegisterSubmit = async (e) => {
     e.preventDefault();
     setFormError("");
@@ -1179,10 +1146,56 @@ export default function Home() {
   };
 
   const activeSlide = AD_SLIDES[adCarouselIndex];
+  const ActiveIcon = activeSlide.icon;
+  const goRegister = () => handleNavigate("/register");
+
+  const PARTNERS = [
+    { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
+    { image: reb, name: "REB", sub: "Basic Education Board" },
+    { image: nesa, name: "NESA", sub: "National Examination" },
+    { image: asyv, name: "ASYV", sub: "System supporter" },
+  ];
+
+  const SERVICES = [
+    { icon: BookOpen, tint: "#1D6FE0", title: "Class notes", text: "Teachers publish notes by subject and class. Students open them anytime, on any phone.", span: "sm:col-span-2" },
+    { icon: ClipboardCheck, tint: "#178754", title: "Quizzes", text: "Auto-graded and aligned with the competence-based curriculum.", span: "" },
+    { icon: GraduationCap, tint: "#1D6FE0", title: "Gradebook", text: "Record marks once. Report cards build themselves.", span: "" },
+    { icon: CalendarCheck, tint: "#FF4500", title: "Attendance", text: "Mark a whole class in under a minute.", span: "" },
+    { icon: FileText, tint: "#178754", title: "Term reports", text: "One click for a class, or the whole school.", span: "" },
+    { icon: Wallet, tint: "rgb(22,32,111)", title: "Fees and payments", text: "Accept MTN Mobile Money, Airtel Money and bank transfers, with receipts sent automatically.", span: "sm:col-span-2" },
+  ];
+
+  const STEPS = [
+    { title: "Register your school", text: "Verify your email with Google and submit your school details and phone number." },
+    { title: "Get approved", text: "We confirm payment, approve your school, and email your school code." },
+    { title: "Add staff and students", text: "They sign up with Google using your school code." },
+    { title: "Confirm sign-in", text: "Every account is verified through Google. No passwords to manage." },
+    { title: "Publish materials", text: "Teachers start uploading notes and quizzes the same day." },
+    { title: "Track progress", text: "Watch attendance, grades and quiz results all term." },
+  ];
+
+  const TEAM = [
+    { name: "Erneste Itangishaka", role: "Founder and lead engineer", image: ceo, tint: "#178754" },
+    { name: "Aline Umurerwa", role: "Product designer", image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=240&q=80", tint: "#1D6FE0" },
+    { name: "Mukunzi Joseph", role: "Backend developer", image: mukunzi, tint: "#FF4500" },
+    { name: "Mutangana Justin", role: "Curriculum lead", image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=240&q=80", tint: "rgb(22,32,111)" },
+  ];
+
+  const TESTIMONIALS = [
+    { quote: "I used to spend a whole weekend marking. Now the quizzes grade themselves and I mark the harder work by hand.", name: "Abayo Albertine", role: "Geo teacher, LFHS", tint: "#178754" },
+    { quote: "Report cards that took two weeks at the end of term now take an afternoon.", name: "Dushime Benjamin", role: "Head teacher, GS Nyamirambo", tint: "rgb(22,32,111)" },
+    { quote: "My students open the notes from their phones on the bus home, and that changed how much they read.", name: "Shyaka Jules", role: "Math teacher, GS Rubona", tint: "#FF4500" },
+  ];
+
+  const STATS = [
+    { pct: 71, color: "rgb(22,32,111)", value: "142+", label: "Partner schools" },
+    { pct: 85, color: "#178754", value: "48,500+", label: "Active students" },
+    { pct: 98, color: "#FF4500", value: "98%", label: "Teacher approval" },
+    { pct: 99, color: "#1D6FE0", value: "99.9%", label: "System uptime" },
+  ];
 
   return (
     <>
-      {/* Loading overlay — an animated checklist rather than a bare spinner. */}
       {isRegisterLoading && (
         <div className="ecw-magic-overlay" role="status" aria-live="polite">
           <div className="ecw-magic-card">
@@ -1193,21 +1206,11 @@ export default function Home() {
                 const active = i === loadingStep;
                 return (
                   <div key={label} className="flex items-center gap-2.5">
-                    <span
-                      className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors"
-                      style={{
-                        background: done ? "#178754" : active ? "#FF4500" : "rgba(255,255,255,0.12)",
-                      }}
-                    >
-                      {done ? (
-                        <CheckCircle2 size={13} color="white" strokeWidth={3} />
-                      ) : (
-                        <span className={`w-1.5 h-1.5 rounded-full bg-white ${active ? "animate-pulse" : "opacity-40"}`} />
-                      )}
+                    <span className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors"
+                      style={{ background: done ? "#178754" : active ? "#FF4500" : "rgba(255,255,255,0.12)" }}>
+                      {done ? <CheckCircle2 size={13} color="white" strokeWidth={3} /> : <span className={`w-1.5 h-1.5 rounded-full bg-white ${active ? "animate-pulse" : "opacity-40"}`} />}
                     </span>
-                    <span className={`text-xs ${done ? "text-white" : active ? "text-white font-semibold" : "text-white/50"}`}>
-                      {label}
-                    </span>
+                    <span className={`text-xs ${done ? "text-white" : active ? "text-white font-semibold" : "text-white/50"}`}>{label}</span>
                   </div>
                 );
               })}
@@ -1234,8 +1237,7 @@ export default function Home() {
 
       {pendingApproval && (
         <PendingApprovalModal
-          roleLabel={pendingApproval.roleLabel}
-          schoolName={pendingApproval.schoolName}
+          roleLabel={pendingApproval.roleLabel} schoolName={pendingApproval.schoolName}
           onClose={() => setPendingApproval(null)}
         />
       )}
@@ -1257,634 +1259,426 @@ export default function Home() {
         />
       )}
 
-    <div className={`min-h-screen bg-white text-neutral-900 font-sans antialiased ${isOverlayActive ? "ecw-blur-active" : ""}`}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&family=Inter:wght@400;500;600&display=swap');
+      <div className={`min-h-screen bg-white text-neutral-900 font-sans antialiased overflow-x-hidden ${isOverlayActive ? "ecw-blur-active" : ""}`}>
+        <style>{`
+          @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Inter:wght@400;500;600&display=swap');
 
-        :root {
-          --ecw-green: #178754;
-          --ecw-green-dark: #136040;
-          --ecw-green-tint: #EAF6EF;
-          --ecw-navy: rgb(22,32,111);
-          --ecw-orange: #FF4500;
-        }
+          :root { --ecw-green:#178754; --ecw-green-dark:#136040; --ecw-green-tint:#EAF6EF; --ecw-navy:rgb(22,32,111); --ecw-orange:#FF4500; }
+          html { scroll-behavior: smooth; }
+          section[id] { scroll-margin-top: 6rem; }
 
-        .ecw-heading { font-family: 'Poppins', sans-serif; }
-        .ecw-body { font-family: 'Inter', sans-serif; }
+          .ecw-heading { font-family:'Bricolage Grotesque','Inter',sans-serif; letter-spacing:-0.02em; }
+          .ecw-body { font-family:'Inter',sans-serif; }
 
-        @keyframes icon-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .icon-spin { animation: icon-spin 3s linear infinite; }
+          @keyframes icon-spin { to { transform: rotate(360deg); } }
+          .icon-spin { animation: icon-spin 1s linear infinite; }
 
-        /* ---------- scroll-in reveal: one pattern, used consistently ---------- */
-        .ecw-reveal {
-          opacity: 0;
-          transform: translateY(18px);
-          transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .ecw-reveal-visible { opacity: 1; transform: translateY(0); }
+          .ecw-reveal { opacity:0; transform:translateY(18px); transition:opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
+          .ecw-reveal-visible { opacity:1; transform:none; }
 
-        .ecw-fade-in { animation: ecw-fade-in 0.3s ease; }
-        @keyframes ecw-fade-in { from { opacity: 0; } to { opacity: 1; } }
+          .ecw-fade-in { animation: ecw-fade-in .3s ease; }
+          @keyframes ecw-fade-in { from{opacity:0} to{opacity:1} }
+          @keyframes ecw-backdrop-fade { from{opacity:0} to{opacity:1} }
+          .ecw-modal-backdrop { animation: ecw-backdrop-fade .2s ease; }
+          @keyframes ecw-modal-pop { from{opacity:0;transform:translateY(14px) scale(.97)} to{opacity:1;transform:none} }
+          .ecw-modal-pop { animation: ecw-modal-pop .3s cubic-bezier(.16,1,.3,1); }
+          @keyframes ecw-dropdown-pop { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:none} }
+          .ecw-dropdown-pop { animation: ecw-dropdown-pop .18s ease; }
+          /* the centred desktop dropdown keeps its horizontal centring while animating */
+          nav .ecw-dropdown-pop { animation-name: ecw-fade-in; }
 
-        /* ---------- modal entrance ---------- */
-        @keyframes ecw-backdrop-fade { from { opacity: 0; } to { opacity: 1; } }
-        .ecw-modal-backdrop { animation: ecw-backdrop-fade 0.2s ease; }
-        @keyframes ecw-modal-pop { from { opacity: 0; transform: translateY(14px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
-        .ecw-modal-pop { animation: ecw-modal-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-        @keyframes ecw-dropdown-pop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
-        .ecw-dropdown-pop { animation: ecw-dropdown-pop 0.15s ease; }
+          .ecw-blur-active { filter: blur(6px) saturate(.9) brightness(.9); }
+          .ecw-magic-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(6,10,30,.65); z-index:9999; animation: ecw-backdrop-fade .2s ease; }
+          .ecw-magic-card { width:300px; max-width:88%; background:var(--ecw-navy); border:1px solid rgba(255,255,255,.1); padding:28px 26px; border-radius:22px; display:flex; flex-direction:column; align-items:center; box-shadow:0 20px 60px rgba(2,6,23,.55); animation: ecw-modal-pop .3s cubic-bezier(.16,1,.3,1); }
+          .ecw-magic-title { color:#fff; font-weight:700; font-size:15px; }
+          .ecw-progress-track { width:100%; height:5px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; margin-top:14px; }
+          .ecw-progress-fill { height:100%; border-radius:999px; background:linear-gradient(90deg,#FF4500,#178754); transition:width .4s ease; }
 
-        /* ---------- loading overlay ---------- */
-        .ecw-blur-active { filter: blur(6px) saturate(0.9) brightness(0.9); transform-origin:center; }
-        .ecw-magic-overlay {
-          position: fixed; inset: 0; display:flex; align-items:center; justify-content:center;
-          background: rgba(6,10,30,0.65); z-index:9999; animation: ecw-backdrop-fade 0.2s ease;
-        }
-        .ecw-magic-card {
-          width:300px; max-width:88%;
-          background: var(--ecw-navy);
-          border:1px solid rgba(255,255,255,0.1);
-          padding:28px 26px; border-radius:18px;
-          display:flex; flex-direction:column; align-items:center;
-          box-shadow:0 20px 60px rgba(2,6,23,0.55);
-          animation: ecw-modal-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-        .ecw-magic-title { color:#fff; font-weight:700; font-size:15px; letter-spacing:0.2px; }
-        .ecw-progress-track {
-          width: 100%; height: 5px; border-radius: 999px;
-          background: rgba(255,255,255,0.12); overflow: hidden; margin-top: 14px;
-        }
-        .ecw-progress-fill {
-          height: 100%; border-radius: 999px;
-          background: linear-gradient(90deg, #FF4500, #178754);
-          transition: width 0.4s ease;
-        }
+          /* hero backdrop: soft colour blobs on a faint dot grid */
+          .ecw-hero-bg { background:
+            radial-gradient(600px 400px at 85% 10%, rgba(23,135,84,.16), transparent 70%),
+            radial-gradient(500px 380px at 5% 30%, rgba(255,69,0,.10), transparent 70%),
+            radial-gradient(520px 420px at 60% 100%, rgba(22,32,111,.10), transparent 70%),
+            #fff; position:relative; }
+          .ecw-hero-bg::before { content:""; position:absolute; inset:0; background-image:radial-gradient(#16206f14 1px, transparent 1px); background-size:22px 22px; mask-image:linear-gradient(to bottom,black,transparent 85%); -webkit-mask-image:linear-gradient(to bottom,black,transparent 85%); pointer-events:none; }
 
-        /* ---------- hero browser-window carousel ---------- */
-        .ecw-browser {
-          position: relative; border-radius: 16px; overflow: hidden;
-          background: #fff; border: 1px solid #E5E7EB;
-          box-shadow: 0 24px 60px -20px rgba(22,32,111,0.35);
-        }
-        .ecw-browser-bar {
-          display: flex; align-items: center; gap: 8px;
-          padding: 0.6rem 0.85rem; background: #F6F7FB; border-bottom: 1px solid #ECEEF5;
-        }
-        .ecw-browser-dot { width: 8px; height: 8px; border-radius: 999px; background: #D8DCE8; }
-        .ecw-browser-url {
-          margin-left: 0.5rem; font-size: 10px; color: #8A90A6; font-family: 'Inter', sans-serif;
-          background: #fff; border: 1px solid #ECEEF5; border-radius: 999px; padding: 0.15rem 0.65rem;
-          flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-        }
-        .ecw-browser-stage { position: relative; aspect-ratio: 16 / 10; overflow: hidden; }
-        .ecw-browser-slide {
-          position: absolute; inset: 0; opacity: 0; transform: scale(1.03);
-          transition: opacity 0.9s ease, transform 0.9s ease;
-        }
-        .ecw-browser-slide-active { opacity: 1; transform: scale(1); z-index: 2; }
-        .ecw-browser-caption {
-          position: absolute; left: 0.85rem; bottom: 0.85rem; right: 0.85rem;
-          display: flex; align-items: center; gap: 0.5rem;
-          background: rgba(255,255,255,0.94); backdrop-filter: blur(6px);
-          border-radius: 999px; padding: 0.5rem 0.85rem; box-shadow: 0 8px 20px rgba(2,6,23,0.12);
-        }
-        .ecw-badge-float {
-          position: absolute; top: -0.9rem; right: 1.4rem; z-index: 4;
-          width: 2.6rem; height: 2.6rem; border-radius: 999px; background: var(--ecw-orange);
-          display: flex; align-items: center; justify-content: center; box-shadow: 0 10px 24px rgba(255,69,0,0.35);
-          animation: ecw-badge-bounce 3.4s ease-in-out infinite;
-        }
-        @keyframes ecw-badge-bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-        .ecw-hero-dots { display: flex; gap: 0.35rem; justify-content: center; margin-top: 0.9rem; }
-        .ecw-hero-dot { width: 6px; height: 6px; border-radius: 999px; background: #D8DCE8; transition: all 0.3s ease; }
-        .ecw-hero-dot-active { width: 20px; background: var(--ecw-green); }
+          .ecw-highlight { background:linear-gradient(transparent 62%, rgba(255,69,0,.28) 62%); }
 
-        /* ---------- partner marquee ---------- */
-        .ecw-marquee { overflow: hidden; -webkit-mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); mask-image: linear-gradient(to right, transparent, black 8%, black 92%, transparent); }
-        .ecw-marquee-track { display: flex; width: max-content; gap: 1.25rem; animation: ecw-marquee 26s linear infinite; }
-        @keyframes ecw-marquee { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-        .ecw-marquee:hover .ecw-marquee-track { animation-play-state: paused; }
+          .ecw-browser { position:relative; border-radius:22px; overflow:hidden; background:#fff; border:1px solid #E5E7EB; box-shadow:0 30px 70px -24px rgba(22,32,111,.45); }
+          .ecw-browser-bar { display:flex; align-items:center; gap:8px; padding:.65rem .9rem; background:#F6F7FB; border-bottom:1px solid #ECEEF5; }
+          .ecw-browser-dot { width:9px; height:9px; border-radius:999px; background:#D8DCE8; }
+          .ecw-browser-url { margin-left:.5rem; font-size:10px; color:#8A90A6; font-family:'Inter',sans-serif; background:#fff; border:1px solid #ECEEF5; border-radius:999px; padding:.15rem .7rem; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+          .ecw-browser-stage { position:relative; aspect-ratio:16/10; overflow:hidden; }
+          .ecw-browser-slide { position:absolute; inset:0; opacity:0; transform:scale(1.03); transition:opacity .9s ease, transform .9s ease; }
+          .ecw-browser-slide-active { opacity:1; transform:scale(1); z-index:2; }
+          .ecw-browser-caption { position:absolute; left:.9rem; bottom:.9rem; right:.9rem; z-index:3; display:flex; align-items:center; gap:.5rem; background:rgba(255,255,255,.94); backdrop-filter:blur(6px); border-radius:999px; padding:.5rem .9rem; box-shadow:0 8px 20px rgba(2,6,23,.12); }
+          .ecw-sticker { position:absolute; z-index:4; display:flex; align-items:center; gap:.5rem; background:#fff; border:1px solid #ECEEF5; border-radius:16px; padding:.55rem .8rem; box-shadow:0 14px 30px rgba(22,32,111,.16); animation: ecw-float 4.2s ease-in-out infinite; }
+          @keyframes ecw-float { 0%,100%{transform:translateY(0) rotate(var(--r,0deg))} 50%{transform:translateY(-7px) rotate(var(--r,0deg))} }
+          .ecw-hero-dots { display:flex; gap:.35rem; justify-content:center; margin-top:1rem; }
+          .ecw-hero-dot { width:6px; height:6px; border-radius:999px; background:#D8DCE8; transition:all .3s ease; }
+          .ecw-hero-dot-active { width:22px; background:var(--ecw-green); }
 
-        /* ---------- team strip ---------- */
-        .ecw-team-strip { display: flex; gap: 1.1rem; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 0.5rem; }
-        .ecw-team-card { scroll-snap-align: start; }
-        .ecw-team-strip::-webkit-scrollbar { height: 6px; }
-        .ecw-team-strip::-webkit-scrollbar-thumb { background: #E5E7EB; border-radius: 999px; }
+          .ecw-marquee { overflow:hidden; -webkit-mask-image:linear-gradient(to right,transparent,black 8%,black 92%,transparent); mask-image:linear-gradient(to right,transparent,black 8%,black 92%,transparent); }
+          .ecw-marquee-track { display:flex; width:max-content; gap:1rem; animation: ecw-marquee 28s linear infinite; }
+          @keyframes ecw-marquee { to { transform: translateX(-50%); } }
+          .ecw-marquee:hover .ecw-marquee-track { animation-play-state:paused; }
 
-        /* ---------- reduced motion ---------- */
-        @media (prefers-reduced-motion: reduce) {
-          .ecw-reveal { opacity: 1; transform: none; transition: none; }
-          .icon-spin, .ecw-browser-slide, .ecw-badge-float, .ecw-marquee-track { animation: none; transition: none; }
-          .ecw-browser-slide-active { opacity: 1; }
-        }
-      `}</style>
+          .ecw-team-strip::-webkit-scrollbar { height:6px; }
+          .ecw-team-strip::-webkit-scrollbar-thumb { background:#E5E7EB; border-radius:999px; }
 
-      <header className="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-neutral-100 shadow-sm">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 h-20 flex items-center justify-between">
-          <a href="#home" className="flex items-center gap-2.5 shrink-0">
-            <span className="w-12 h-12 rounded-full bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20 shrink-0">
-              <img src={esms} alt="ESMS logo" className="w-full h-full" />
-            </span>
-            <span className="ecw-heading font-bold text-[15px] text-neutral-900 leading-none">
-              ESMS
-            </span>
-          </a>
+          :focus-visible { outline:2px solid var(--ecw-green); outline-offset:2px; }
 
-          <nav className="hidden lg:flex items-center gap-6 text-[13px] font-semibold text-neutral-600 ecw-body">
-            <a href="#home" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Home</a>
-            <a href="#services" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Our services</a>
-            <a href="#how-it-works" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">How to get started</a>
-            <a href="#register" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Register</a>
-            <a href="#dashboard" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Dashboard</a>
-            <a href="#team" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Our team</a>
-            <a href="#contact" className="relative py-1 hover:text-[#178754] transition-colors after:absolute after:left-0 after:-bottom-0.5 after:h-[2px] after:w-0 after:bg-[#178754] after:transition-all hover:after:w-full">Contact</a>
-          </nav>
+          @media (prefers-reduced-motion: reduce) {
+            html { scroll-behavior:auto; }
+            .ecw-reveal { opacity:1; transform:none; transition:none; }
+            .icon-spin, .ecw-browser-slide, .ecw-sticker, .ecw-marquee-track { animation:none; transition:none; }
+            .ecw-browser-slide-active { opacity:1; }
+          }
+        `}</style>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}
-              className="hidden sm:inline-flex items-center justify-center gap-2 text-[13px] font-bold text-white px-4 py-2 rounded-lg transition-opacity hover:opacity-90 bg-[rgb(22,32,111)] disabled:opacity-90 disabled:cursor-not-allowed"
-            >
-              {isRegisterLoading ? (
-                <>
-                  <svg className="w-4 h-4 icon-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                    <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                  </svg>
-                  <span>Loading...</span>
-                </>
-              ) : "Get started"}
-            </button>
+        <Navbar onGetStarted={goRegister} onOpenAuth={openAuth} loading={isRegisterLoading} />
 
-            <input type="checkbox" id="nav-toggle" className="peer hidden" />
-            <label htmlFor="nav-toggle" className="lg:hidden flex flex-col justify-center items-center gap-1.5 w-9 h-9 rounded-lg border border-neutral-200 cursor-pointer">
-              <span className="block w-4 h-0.5 bg-neutral-700"></span>
-              <span className="block w-4 h-0.5 bg-neutral-700"></span>
-              <span className="block w-4 h-0.5 bg-neutral-700"></span>
-            </label>
-
-            <div className="hidden peer-checked:flex lg:hidden flex-col absolute top-20 right-5 w-56 bg-white/95 shadow-xl rounded-2xl ring-1 ring-black/5 px-4 py-4 gap-2 text-[13px] font-semibold text-neutral-700 ecw-body">
-              <a href="#home" className="py-2 hover:text-[#178754] transition-colors">Home</a>
-              <a href="#services" className="py-2 hover:text-[#178754] transition-colors">Our services</a>
-              <a href="#how-it-works" className="py-2 hover:text-[#178754] transition-colors">How to get started</a>
-              <button type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading} className="py-2 text-left w-full hover:text-[#178754] transition-colors disabled:opacity-70">
-                {isRegisterLoading ? "Loading..." : "Register"}
-              </button>
-              <a href="#dashboard" className="py-2 hover:text-[#178754] transition-colors">Dashboard</a>
-              <a href="#team" className="py-2 hover:text-[#178754] transition-colors">Our team</a>
-              <a href="#contact" className="py-2 hover:text-[#178754] transition-colors">Contact</a>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* HERO — headline + inline stat strip on the left, a live browser-window carousel on the right */}
-      <section id="home" className="bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 pt-14 pb-16 grid lg:grid-cols-[1.05fr_1fr] gap-12 items-center">
-          <div className="flex flex-col items-start text-left">
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-widest text-white bg-gradient-to-r from-[#FF4500] to-[#c93500] px-4 py-2 rounded mb-5 shadow-sm">
-              No more spending lot of time
-            </span>
-            <h1 className="ecw-heading text-[2rem] sm:text-4xl font-extrabold leading-[1.12] text-neutral-900 mb-4">
-              Easy way to manage students in the classroom
-            </h1>
-            <p className="ecw-body text-sm text-neutral-600 leading-relaxed max-w-md mb-7">
-              Easy ClassWork Records gives every school a single system for teachers, students
-              and administrators, built for the curriculum and designed for Rwanda.
-            </p>
-
-            <div className="flex flex-wrap gap-3 mb-9">
-              <button
-                type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}
-                className="inline-flex items-center justify-center gap-2 text-[13px] font-bold text-white px-5 py-2.5 rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
-              >
-                {isRegisterLoading ? (
-                  <>
-                    <svg className="w-4 h-4 icon-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="8" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                    </svg>
-                    <span>Loading...</span>
-                  </>
-                ) : "Register your school"}
-              </button>
-              <a href="#services" className="inline-flex items-center gap-1.5 text-[13px] font-bold text-[rgb(22,32,111)] border border-[rgb(22,32,111)]/20 hover:bg-[rgb(22,32,111)]/5 px-5 py-2.5 rounded-lg transition-colors">
-                See what it does <ArrowUpRight size={14} />
-              </a>
-            </div>
-
-            {/* Inline stat strip, replacing the old separate donut section content on the hero */}
-            <div className="flex flex-wrap gap-x-8 gap-y-3 border-t border-neutral-100 pt-6 w-full">
-              {[
-                { value: "142+", label: "Partner schools" },
-                { value: "48,500+", label: "Active students" },
-                { value: "99.9%", label: "System uptime" },
-              ].map((s) => (
-                <div key={s.label}>
-                  <p className="ecw-heading text-lg font-extrabold text-neutral-900">{s.value}</p>
-                  <p className="ecw-body text-[11px] text-neutral-500">{s.label}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="relative">
-            <div className="ecw-badge-float">
-              {(() => { const Icon = activeSlide.icon; return <Icon size={16} color="white" />; })()}
-            </div>
-            <div className="ecw-browser">
-              <div className="ecw-browser-bar">
-                <span className="ecw-browser-dot" /><span className="ecw-browser-dot" /><span className="ecw-browser-dot" />
-                <span className="ecw-browser-url">app.easyclasswork.rw{activeSlide.path.replace("·", "")}</span>
-              </div>
-              <div className="ecw-browser-stage">
-                {AD_SLIDES.map((slide, i) => {
-                  const active = i === adCarouselIndex;
-                  return (
-                    <div key={slide.caption} className={`ecw-browser-slide ${active ? "ecw-browser-slide-active" : ""}`} aria-hidden={!active}>
-                      <img src={slide.image} alt={slide.caption} className="w-full h-full object-cover" />
-                    </div>
-                  );
-                })}
-                <div className="ecw-browser-caption">
-                  {(() => { const Icon = activeSlide.icon; return <Icon size={14} className="text-[#178754] shrink-0" />; })()}
-                  <span className="ecw-body text-[11px] font-bold text-neutral-800 truncate">{activeSlide.caption}</span>
-                </div>
-              </div>
-            </div>
-            <div className="ecw-hero-dots">
-              {AD_SLIDES.map((slide, i) => (
-                <span key={slide.caption} className={`ecw-hero-dot ${i === adCarouselIndex ? "ecw-hero-dot-active" : ""}`} />
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* OUR SERVICES — bento-style list instead of a uniform card grid */}
-      <section id="services" className="bg-white py-16 border-t border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our services</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              Everything a school needs to run its academic year
-            </h2>
-          </Reveal>
-          <div className="grid sm:grid-cols-2 border-t border-l border-neutral-100">
-            {[
-              { icon: BookOpen, tint: "#1D6FE0", title: "Class notes", text: "Teachers publish notes by subject and class, students open them anytime." },
-              { icon: ClipboardCheck, tint: "#178754", title: "Quizzes", text: "Auto-graded assessments aligned with the competence-based curriculum." },
-              { icon: GraduationCap, tint: "#1D6FE0", title: "Gradebook", text: "Record marks once, and let report cards build themselves." },
-              { icon: CalendarCheck, tint: "#178754", title: "Attendance", text: "Mark attendance from a phone or a laptop in under a minute." },
-              { icon: FileText, tint: "#1D6FE0", title: "Term reports", text: "Generate report cards for a class, or the whole school, in one click." },
-              { icon: Wallet, tint: "#178754", title: "Fees and payments", text: "Accept MTN Mobile Money, Airtel Money and bank transfers." },
-            ].map(({ icon: Icon, tint, title, text }, idx) => (
-              <div
-                key={title}
-                className="group relative flex items-start gap-4 p-6 border-r border-b border-neutral-100 hover:bg-neutral-50/70 transition-colors duration-300"
-              >
-                <span className="absolute left-0 top-0 bottom-0 w-0.5 bg-transparent group-hover:bg-[--tint] transition-colors" style={{ "--tint": tint }} />
-                <Icon className="w-5 h-5 mt-0.5 shrink-0 transition-transform duration-300 group-hover:scale-110" style={{ color: tint }} aria-hidden="true" />
-                <div>
-                  <h3 className="ecw-heading font-bold text-sm text-neutral-900 mb-1">{title}</h3>
-                  <p className="ecw-body text-xs text-neutral-600 leading-relaxed">{text}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* HOW TO GET STARTED — horizontal connected stepper on desktop, stacked on mobile */}
-      <section id="how-it-works" className="py-16 bg-neutral-50 border-y border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-12">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">How to get started</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              Six steps, and your school is online
-            </h2>
-          </Reveal>
-
-          <div className="hidden lg:grid grid-cols-6 gap-4 relative">
-            <div className="absolute top-5 left-[8.3%] right-[8.3%] h-0.5 bg-[#178754]/25" />
-            {[
-              { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details." },
-              { i: 2, title: "Get approved", text: "We confirm payment, approve your school, and email your school code." },
-              { i: 3, title: "Add staff & students", text: "They sign up with Google using your school code." },
-              { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords." },
-              { i: 5, title: "Publish materials", text: "Teachers start uploading notes and quizzes the same day." },
-              { i: 6, title: "Track progress", text: "Watch attendance, grades and quiz results all term." },
-            ].map((step) => (
-              <div key={step.i} className="relative flex flex-col items-start">
-                <div className="relative z-10 w-10 h-10 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow mb-3">
-                  {step.i}
-                </div>
-                <h3 className="ecw-heading font-bold text-xs text-neutral-900 mb-1">{step.title}</h3>
-                <p className="ecw-body text-[11px] text-neutral-600 leading-relaxed">{step.text}</p>
-              </div>
-            ))}
-          </div>
-
-          <div className="lg:hidden flex flex-col gap-5">
-            {[
-              { i: 1, title: "Register your school", text: "Verify your email with Google and submit your school details and phone number." },
-              { i: 2, title: "Get approved", text: "Our team calls you to confirm payment, approves your school, and emails you your school code." },
-              { i: 3, title: "Add staff and students", text: "Teachers and students sign up with Google using your school code." },
-              { i: 4, title: "Confirm sign-in", text: "Every account is verified through Google — no passwords to manage or forget." },
-              { i: 5, title: "Publish notes and quizzes", text: "Teachers start uploading materials the same day." },
-              { i: 6, title: "Track progress", text: "Watch attendance, grades and quiz results as the term goes on." },
-            ].map((step) => (
-              <div key={step.i} className="flex items-start gap-3 bg-white rounded-xl border border-neutral-100 p-4">
-                <div className="w-9 h-9 shrink-0 rounded-full bg-white border-2 border-[#178754] flex items-center justify-center text-sm font-bold text-[rgb(22,32,111)] shadow">{step.i}</div>
-                <div>
-                  <h3 className="ecw-heading font-bold text-sm text-neutral-900">{step.title}</h3>
-                  <p className="ecw-body text-xs text-neutral-600 mt-1">{step.text}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* REGISTER / DASHBOARDS — list-style role rows instead of a card grid */}
-      <section id="register" className="py-16 bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide" style={{ color: "#FF4500" }}>Register</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Choose your dashboard</h2>
-            <p className="ecw-body text-xs text-neutral-600 mt-2">
-              Students and teachers verify their email and sign in with Google — teachers also pick every
-              class and subject they teach at sign-in. School admins sign in with the same Google account
-              they registered their school with, once the school has been approved.
-            </p>
-          </Reveal>
-
-          <div className="flex flex-col divide-y divide-neutral-100 border-y border-neutral-100 mb-10">
-            {[
-              { role: "student", tint: "#178754", title: "Student dashboard", text: "Read class notes, take quizzes and check your report card, signed in with Google." },
-              { role: "teacher", tint: "#1D6FE0", title: "Teacher dashboard", text: "Upload lesson materials, grade work and record attendance — choose every class and subject you teach when you sign in with Google." },
-              { role: "schoolAdmin", tint: "#178754", title: "School admin", text: "Manage staff accounts, student codes and fees for your own school — sign in with the Google account you registered with." },
-              { role: "superAdmin", tint: "#1D6FE0", title: "Super admin", text: "Oversee every school on the platform — sign in with the authorized Google account." },
-            ].map(({ role, tint, title, text }) => {
-              const RoleIcon = ROLE_CONFIG[role].icon;
-              return (
-                <div key={role} className="group flex flex-col sm:flex-row sm:items-center gap-4 py-6">
-                  <span className="inline-flex w-11 h-11 shrink-0 rounded-xl items-center justify-center transition-transform duration-300 group-hover:scale-105" style={{ background: `${tint}14` }}>
-                    <RoleIcon className="w-5 h-5" style={{ color: tint }} aria-hidden="true" />
-                  </span>
-                  <div className="flex-1">
-                    <h3 className="ecw-heading font-bold text-sm text-neutral-900">{title}</h3>
-                    <p className="ecw-body text-xs text-neutral-600 leading-relaxed mt-0.5 max-w-xl">{text}</p>
-                  </div>
-                  <button
-                    type="button" onClick={() => openAuth(role, "login")}
-                    className="shrink-0 py-2.5 px-5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]"
-                  >
-                    Sign in as {ROLE_CONFIG[role].label.toLowerCase()}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="bg-neutral-50 rounded-xl p-6 border border-neutral-100">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-5 mb-5">
-              <div>
-                <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">School registration</span>
-                <p className="ecw-heading text-xl font-extrabold text-neutral-900 mt-1">150,000 RWF <span className="ecw-body text-xs font-medium text-neutral-500">/ term</span></p>
-                <p className="ecw-body text-xs text-neutral-600 mt-1">Includes notes, quiz, report cards and a school code to add your staff and students. Your code is emailed to you once your school is approved.</p>
-              </div>
-              <button
-                type="button" onClick={() => handleNavigate("/register")} disabled={isRegisterLoading}
-                className="whitespace-nowrap inline-flex items-center justify-center gap-2 py-2.5 px-5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[#178754] disabled:opacity-90 disabled:cursor-not-allowed"
-              >
-                {isRegisterLoading ? "Loading..." : "Register my school"}
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-3 pt-4 border-t border-neutral-200 items-center">
-              <span className="text-[11px] font-bold text-neutral-500">Pay with</span>
-              <div className="flex flex-wrap gap-2">
-                <span className="flex items-center justify-center min-w-[130px] sm:min-w-[160px] gap-2 text-[11px] sm:text-[12px] font-bold px-4 py-2 rounded-md bg-yellow-50 text-yellow-700 border border-yellow-200">
-                  <Smartphone className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden="true" /> MTN Money
-                </span>
-                <span className="flex items-center justify-center min-w-[130px] sm:min-w-[160px] gap-2 text-[11px] sm:text-[12px] font-bold px-4 py-2 rounded-md bg-red-50 text-red-700 border border-red-200">
-                  <Smartphone className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden="true" /> Airtel Money
-                </span>
-                <span className="flex items-center justify-center min-w-[130px] sm:min-w-[160px] gap-2 text-[11px] sm:text-[12px] font-bold px-4 py-2 rounded-md bg-blue-50 border border-blue-200 text-[rgb(22,32,111)]">
-                  <Landmark className="w-5 h-5 sm:w-6 sm:h-6" aria-hidden="true" /> Bank transfer
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* DASHBOARD */}
-      <section id="dashboard" className="py-16 bg-neutral-50 border-y border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-8">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Live dashboard</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">
-              See the school's whole term at a glance
-            </h2>
-          </Reveal>
-
-          <div className="rounded-2xl border border-neutral-200 overflow-hidden bg-white shadow-sm">
-            <div className="bg-neutral-50 px-4 py-2.5 flex items-center gap-1.5 border-b border-neutral-200">
-              <span className="w-2.5 h-2.5 rounded-full bg-neutral-300"></span>
-              <span className="w-2.5 h-2.5 rounded-full bg-neutral-300"></span>
-              <span className="w-2.5 h-2.5 rounded-full bg-neutral-300"></span>
-              <span className="ecw-body text-[11px] text-neutral-400 ml-3">app.easyclasswork.rw/dashboard</span>
-            </div>
-            <div className="w-full aspect-[16/9] flex items-center justify-center bg-gradient-to-br from-[#EAF6EF] to-white">
-              <img src={dashboard} alt="Dashboard preview" className="w-full h-full" />
-            </div>
-          </div>
-
-          <div ref={statsRef} className="flex flex-wrap gap-5 mt-8">
-            {[
-              { pct: 71, color: "rgb(22,32,111)", value: "142+", label: "Partner schools" },
-              { pct: 85, color: "#178754", value: "48,500+", label: "Active students" },
-              { pct: 98, color: "rgb(22,32,111)", value: "98%", label: "Teacher approval" },
-              { pct: 99, color: "#178754", value: "99.9%", label: "System uptime" },
-            ].map(({ pct, color, value, label }) => {
-              const shownPct = statsVisible ? pct : 0;
-              return (
-                <div key={label} className="flex flex-col items-center text-center flex-1 min-w-[120px]">
-                  <svg width="76" height="76" viewBox="0 0 76 76">
-                    <circle cx="38" cy="38" r="30" fill="none" stroke="#E5F0FF" strokeWidth="7" />
-                    <circle
-                      cx="38" cy="38" r="30" fill="none" stroke={color} strokeWidth="7" strokeLinecap="round"
-                      strokeDasharray="188.5" strokeDashoffset={188.5 - (188.5 * shownPct) / 100}
-                      transform="rotate(-90 38 38)"
-                      style={{ transition: "stroke-dashoffset 1.1s cubic-bezier(0.16, 1, 0.3, 1)" }}
-                    />
-                  </svg>
-                  <p className="ecw-heading text-sm font-extrabold text-neutral-900 mt-2">{value}</p>
-                  <p className="ecw-body text-[11px] text-neutral-500">{label}</p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* OUR TEAM — horizontal scrolling strip instead of a static grid */}
-      <section id="team" className="py-16 bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Our team</span>
-            <h2 className="ecw-heading text-xl font-extrabold text-neutral-900 mt-2">
-              The people who built ESMS
-            </h2>
-          </Reveal>
-          <div className="ecw-team-strip">
-            {[
-              { name: "Erneste Itangishaka", role: "Founder and lead engineer", image: ceo, ring: "ring-emerald-100", tint: "#178754" },
-              { name: "Aline Umurerwa", role: "Product designer", image: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
-              { name: "Mukunzi Joseph", role: "Backend Developer", image: mukunzi, ring: "ring-emerald-100", tint: "#178754" },
-              { name: "Mutangana Justin", role: "Curriculum lead", image: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=240&q=80", ring: "ring-blue-100", tint: "rgb(22,32,111)" },
-            ].map((m) => (
-              <div key={m.name} className="ecw-team-card flex flex-col items-center text-center bg-neutral-50 rounded-2xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-56 shrink-0">
-                <span className={`w-24 h-24 rounded-full bg-white flex items-center justify-center mx-auto mb-4 ring-4 ${m.ring} shadow-sm`}>
-                  <img src={m.image} alt={`${m.name} portrait`} className="w-full h-full rounded-full object-cover" />
-                </span>
-                <p className="ecw-heading font-bold text-sm text-neutral-900">{m.name}</p>
-                <p className="ecw-body text-xs mt-0.5" style={{ color: m.tint }}>{m.role}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* TESTIMONIALS — editorial quote cards with an accent rail */}
-      <section className="py-16 bg-neutral-50 border-y border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <Reveal className="max-w-xl mb-10">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">In their words</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2">Teachers who use it every day</h2>
-          </Reveal>
-          <div className="flex flex-col gap-4">
-            {[
-              { quote: "I used to spend a whole weekend marking. Now the quizzes grade themselves and I mark the harder work by hand.", name: "Abayo Albertine", role: "Geo Teacher, LFHS", tint: "#178754" },
-              { quote: "Report cards that took two weeks at the end of term now take an afternoon.", name: "Dushime Benjamin", role: "Head teacher, GS Nyamirambo", tint: "rgb(22,32,111)" },
-              { quote: "My students open the notes from their phones on the bus home, and that changed how much they read.", name: "Shyaka Jules", role: "Math Teacher, GS Rubona", tint: "#178754" },
-            ].map((t) => (
-              <div key={t.name} className="flex items-start gap-4 bg-white rounded-xl p-5 border-l-4 hover:shadow-md transition-shadow duration-300" style={{ borderColor: t.tint }}>
-                <Quote className="w-7 h-7 shrink-0 mt-0.5 opacity-30" style={{ color: t.tint }} aria-hidden="true" />
-                <div>
-                  <p className="ecw-body text-xs text-neutral-700 leading-relaxed mb-3">{t.quote}</p>
-                  <p className="ecw-heading text-xs font-bold text-neutral-900">{t.name} <span className="ecw-body font-normal text-neutral-400">· {t.role}</span></p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* PARTNERS — continuous marquee instead of a static row */}
-      <section id="partners" className="py-14 bg-white">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8">
-          <p className="text-[11px] font-bold uppercase tracking-wide text-neutral-400 text-center mb-8">Our partners</p>
-          <div className="ecw-marquee">
-            <div className="ecw-marquee-track">
-              {[...[
-                { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
-                { image: reb, name: "REB", sub: "Basic Education Board" },
-                { image: nesa, name: "NESA", sub: "National Examination" },
-                { image: asyv, name: "ASYV", sub: "System supporter" },
-              ], ...[
-                { image: minedic, name: "MINEDUC", sub: "Ministry of Education" },
-                { image: reb, name: "REB", sub: "Basic Education Board" },
-                { image: nesa, name: "NESA", sub: "National Examination" },
-                { image: asyv, name: "ASYV", sub: "System supporter" },
-              ]].map(({ image, name, sub }, idx) => (
-                <div key={`${name}-${idx}`} className="flex items-center gap-3 bg-neutral-50 rounded-xl p-4 border border-neutral-100 w-72 shrink-0">
-                  <span className="w-11 h-11 rounded-full bg-white flex items-center justify-center shrink-0 overflow-hidden">
-                    <img src={image} alt={`${name} logo`} className="w-full h-full object-contain" />
-                  </span>
-                  <div>
-                    <p className="ecw-heading font-bold text-xs text-neutral-900">{name}</p>
-                    <p className="ecw-body text-[10px] text-neutral-500">{sub}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* CONTACT */}
-      <section id="contact" className="py-16 bg-neutral-50 border-y border-neutral-100">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 flex flex-wrap gap-10 items-center">
-          <Reveal className="flex-1 min-w-[260px]">
-            <span className="text-[11px] font-bold uppercase tracking-wide text-green-700">Contact</span>
-            <h2 className="ecw-heading text-2xl font-extrabold text-neutral-900 mt-2 mb-3">Talk to us before you sign up</h2>
-            <p className="ecw-body text-xs text-neutral-600 leading-relaxed mb-5">
-              Have questions about pricing, your school code, or how the switch works
-              partway through a term? Reach the helpline and someone will walk you through it.
-            </p>
-            <div className="flex flex-col gap-2 text-xs ecw-body text-neutral-700">
-              <p>support@classwork.rw</p>
-              <p>+250 788 000 000</p>
-              <p>Kigali, Rwanda</p>
-            </div>
-          </Reveal>
-          <div className="flex-1 min-w-[260px] bg-white rounded-xl p-6 border border-neutral-100">
-            <div className="flex flex-col gap-3">
-              <input type="text" placeholder="Full name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors" />
-              <input type="text" placeholder="School name" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors" />
-              <textarea placeholder="How can we help?" rows="3" className="w-full text-xs px-3 py-2.5 rounded-lg border border-neutral-200 focus:outline-none focus:border-green-400 transition-colors"></textarea>
-              <button type="button" className="w-full py-2.5 text-white font-bold text-xs rounded-lg transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]">
-                Send message
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* FOOTER */}
-      <footer className="text-white pt-12 bg-[rgb(22,32,111)]">
-        <div className="max-w-6xl mx-auto px-5 sm:px-8 pb-10 flex flex-wrap gap-8">
-          <div className="flex flex-col gap-3 flex-1 min-w-[220px]">
-            <div className="flex items-center gap-2.5">
-              <span className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center shrink-0">
-                <img src={esms} alt="ESMS logo" className="w-full h-full" />
+        {/* HERO */}
+        <section id="home" className="ecw-hero-bg pt-32 sm:pt-36 pb-20">
+          <div className="relative max-w-6xl mx-auto px-5 sm:px-8 grid lg:grid-cols-[1.05fr_1fr] gap-14 items-center">
+            <div className="flex flex-col items-start text-left">
+              <span className="inline-flex items-center gap-2 text-[12px] font-bold text-[rgb(22,32,111)] bg-white border border-neutral-200 pl-2 pr-4 py-1.5 rounded-full shadow-sm mb-6">
+                <span className="w-6 h-6 rounded-full bg-[#FF4500] flex items-center justify-center"><Sparkles size={12} color="white" /></span>
+                Built for Rwandan schools
               </span>
-              <span className="ecw-heading font-bold text-sm">ESMS</span>
+              <h1 className="ecw-heading text-[2.6rem] sm:text-6xl font-extrabold leading-[1.02] text-neutral-900 mb-5">
+                Classwork, marks and fees. <span className="ecw-highlight">Sorted</span> in one place.
+              </h1>
+              <p className="ecw-body text-[15px] text-neutral-600 leading-relaxed max-w-md mb-8">
+                Easy ClassWork Records gives every school one system for teachers, students and administrators,
+                built around the Rwandan curriculum.
+              </p>
+
+              <div className="flex flex-wrap gap-3 mb-10">
+                <button type="button" onClick={goRegister} disabled={isRegisterLoading}
+                  className="inline-flex items-center justify-center gap-2 text-sm font-bold text-white px-6 py-3.5 rounded-full transition-all hover:-translate-y-0.5 active:scale-[0.98] bg-[#178754] shadow-lg shadow-[#178754]/30 disabled:opacity-90 disabled:cursor-not-allowed">
+                  {isRegisterLoading ? "Loading…" : "Register your school"}
+                </button>
+                <a href="#dashboards" className="inline-flex items-center gap-1.5 text-sm font-bold text-[rgb(22,32,111)] bg-white border border-neutral-200 hover:border-[rgb(22,32,111)]/40 px-6 py-3.5 rounded-full transition-colors">
+                  Pick your dashboard <ArrowUpRight size={15} />
+                </a>
+              </div>
+
+              <div className="flex flex-wrap gap-x-10 gap-y-3 pt-6 border-t border-neutral-200/70 w-full">
+                {[{ v: "142+", l: "Partner schools" }, { v: "48,500+", l: "Active students" }, { v: "99.9%", l: "System uptime" }].map((s) => (
+                  <div key={s.l}>
+                    <p className="ecw-heading text-xl font-extrabold text-neutral-900">{s.v}</p>
+                    <p className="ecw-body text-[11px] text-neutral-500">{s.l}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="ecw-body text-[11px] text-white/70 leading-relaxed">
-              Academic records and classroom tools built for primary and secondary schools across Rwanda.
-            </p>
-          </div>
-          <div className="flex-1 min-w-[160px]">
-            <h4 className="ecw-heading font-bold text-xs uppercase tracking-wider mb-3">System</h4>
-            <ul className="flex flex-col gap-2 text-[11px] ecw-body text-white/70">
-              <li><a href="#services" className="hover:text-green-300 transition-colors">Our services</a></li>
-              <li><a href="#register" className="hover:text-green-300 transition-colors">School registration</a></li>
-              <li><a href="#dashboard" className="hover:text-green-300 transition-colors">Live dashboard</a></li>
-              <li><a href="#team" className="hover:text-green-300 transition-colors">Our team</a></li>
-            </ul>
-          </div>
-          <div className="flex-1 min-w-[160px]">
-            <h4 className="ecw-heading font-bold text-xs uppercase tracking-wider mb-3">Helpline</h4>
-            <ul className="flex flex-col gap-2 text-[11px] ecw-body text-white/70">
-              <li>support@classwork.rw</li>
-              <li>+250 788 000 000</li>
-              <li>Kigali, Rwanda</li>
-            </ul>
-          </div>
-        </div>
-        <div className="border-t border-white/10 py-4 px-5 sm:px-8">
-          <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3 text-[11px] ecw-body text-white/60">
-            <p>© 2026 Easy ClassWork Records. All rights reserved.</p>
-            <div className="flex gap-4">
-              <a href="#home" className="hover:text-white transition-colors">Privacy policy</a>
-              <a href="#home" className="hover:text-white transition-colors">Terms of service</a>
-              <a href="#contact" className="hover:text-white transition-colors">Contact</a>
+
+            <div className="relative">
+              <div className="ecw-sticker -top-5 -left-3 sm:-left-8" style={{ "--r": "-4deg" }}>
+                <span className="w-8 h-8 rounded-xl bg-[#EAF6EF] flex items-center justify-center"><ClipboardCheck size={16} className="text-[#178754]" /></span>
+                <span><span className="block ecw-heading text-xs font-bold text-neutral-900">Quiz graded</span><span className="block ecw-body text-[10px] text-neutral-500">38 of 40 submitted</span></span>
+              </div>
+              <div className="ecw-sticker -bottom-6 -right-2 sm:-right-6" style={{ "--r": "3deg", animationDelay: "1.2s" }}>
+                <span className="w-8 h-8 rounded-xl bg-[#FF4500]/10 flex items-center justify-center"><CalendarCheck size={16} className="text-[#FF4500]" /></span>
+                <span><span className="block ecw-heading text-xs font-bold text-neutral-900">Attendance done</span><span className="block ecw-body text-[10px] text-neutral-500">S3 A · 41 present</span></span>
+              </div>
+
+              <div className="ecw-browser">
+                <div className="ecw-browser-bar">
+                  <span className="ecw-browser-dot" /><span className="ecw-browser-dot" /><span className="ecw-browser-dot" />
+                  <span className="ecw-browser-url">app.easyclasswork.rw{activeSlide.path}</span>
+                </div>
+                <div className="ecw-browser-stage">
+                  {AD_SLIDES.map((slide, i) => {
+                    const active = i === adCarouselIndex;
+                    return (
+                      <div key={slide.caption} className={`ecw-browser-slide ${active ? "ecw-browser-slide-active" : ""}`} aria-hidden={!active}>
+                        <img src={slide.image} alt={slide.caption} className="w-full h-full object-cover" />
+                      </div>
+                    );
+                  })}
+                  <div className="ecw-browser-caption">
+                    <ActiveIcon size={14} className="text-[#178754] shrink-0" />
+                    <span className="ecw-body text-[11px] font-bold text-neutral-800 truncate">{activeSlide.caption}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="ecw-hero-dots">
+                {AD_SLIDES.map((slide, i) => (
+                  <span key={slide.caption} className={`ecw-hero-dot ${i === adCarouselIndex ? "ecw-hero-dot-active" : ""}`} />
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      </footer>
-    </div>
+        </section>
+
+        {/* PARTNERS */}
+        <section id="partners" className="py-10 bg-white border-y border-neutral-100">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <p className="ecw-body text-xs font-semibold text-neutral-400 text-center mb-6">Supported by the people who run education in Rwanda</p>
+            <div className="ecw-marquee">
+              <div className="ecw-marquee-track">
+                {[...PARTNERS, ...PARTNERS].map(({ image, name, sub }, idx) => (
+                  <div key={`${name}-${idx}`} className="flex items-center gap-3 bg-neutral-50 rounded-2xl p-3.5 border border-neutral-100 w-64 shrink-0">
+                    <span className="w-11 h-11 rounded-full bg-white flex items-center justify-center shrink-0 overflow-hidden">
+                      <img src={image} alt={`${name} logo`} className="w-full h-full object-contain" />
+                    </span>
+                    <div>
+                      <p className="ecw-heading font-bold text-xs text-neutral-900">{name}</p>
+                      <p className="ecw-body text-[10px] text-neutral-500">{sub}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* SERVICES — bento */}
+        <section id="services" className="bg-white py-20">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <SectionHead tag="Services" title="Everything a school needs to run its academic year" />
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {SERVICES.map(({ icon: Icon, tint, title, text, span }) => (
+                <div key={title} className={`group relative overflow-hidden rounded-3xl border border-neutral-100 bg-neutral-50 p-6 hover:bg-white hover:shadow-xl hover:shadow-neutral-200/60 transition-all duration-300 ${span === "sm:col-span-2" ? "sm:col-span-2" : ""}`}>
+                  <span className="w-11 h-11 rounded-2xl flex items-center justify-center mb-5" style={{ background: `${tint}18` }}>
+                    <Icon className="w-5 h-5" style={{ color: tint }} aria-hidden="true" />
+                  </span>
+                  <h3 className="ecw-heading font-bold text-lg text-neutral-900 mb-1.5">{title}</h3>
+                  <p className="ecw-body text-[13px] text-neutral-600 leading-relaxed max-w-sm">{text}</p>
+                  <span className="absolute -right-8 -bottom-8 w-28 h-28 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-500" style={{ background: `${tint}12` }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* HOW IT WORKS */}
+        <section id="how-it-works" className="py-20 bg-[rgb(22,32,111)] text-white relative overflow-hidden">
+          <div className="absolute -top-24 -right-24 w-80 h-80 rounded-full bg-[#178754]/30 blur-3xl" />
+          <div className="relative max-w-6xl mx-auto px-5 sm:px-8">
+            <Reveal className="max-w-2xl mb-12">
+              <span className="inline-block text-[11px] font-bold px-3 py-1 rounded-full mb-3 bg-white/10 text-white">How it works</span>
+              <h2 className="ecw-heading text-3xl sm:text-4xl font-extrabold leading-tight">Six steps, and your school is online</h2>
+            </Reveal>
+            <ol className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {STEPS.map((s, i) => (
+                <li key={s.title} className="rounded-3xl bg-white/[0.06] border border-white/10 p-6 hover:bg-white/10 transition-colors">
+                  <span className="w-9 h-9 rounded-full bg-[#FF4500] text-white text-sm font-bold flex items-center justify-center mb-4">{i + 1}</span>
+                  <h3 className="ecw-heading font-bold text-base mb-1.5">{s.title}</h3>
+                  <p className="ecw-body text-[13px] text-white/70 leading-relaxed">{s.text}</p>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+
+        {/* DASHBOARDS — one card per role */}
+        <section id="dashboards" className="py-20 bg-white">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <SectionHead
+              tag="Dashboards" tagColor="#FF4500" title="Choose your dashboard"
+              text="Students and teachers sign in with Google. Teachers also pick every class and subject they teach. School admins use the Google account they registered the school with, once it's approved."
+            />
+            <div className="grid sm:grid-cols-2 gap-4 mb-10">
+              {DASHBOARDS.map((d) => {
+                const Icon = ROLE_CONFIG[d.role].icon;
+                return (
+                  <div key={d.role} className="group flex flex-col rounded-3xl border border-neutral-100 bg-white p-6 hover:shadow-xl hover:shadow-neutral-200/60 hover:-translate-y-0.5 transition-all duration-300">
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <span className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: `${d.tint}14` }}>
+                        <Icon className="w-6 h-6" style={{ color: d.tint }} aria-hidden="true" />
+                      </span>
+                      <span className="ecw-body text-[10px] font-bold px-2.5 py-1 rounded-full" style={{ color: d.tint, background: `${d.tint}12` }}>{d.group}</span>
+                    </div>
+                    <h3 className="ecw-heading font-bold text-xl text-neutral-900">{d.title} dashboard</h3>
+                    <p className="ecw-body text-[13px] text-neutral-600 mt-1 mb-4">{d.text}</p>
+                    <ul className="flex flex-col gap-2 mb-6">
+                      {d.points.map((p) => (
+                        <li key={p} className="ecw-body flex items-center gap-2 text-xs text-neutral-700">
+                          <span className="w-4 h-4 rounded-full flex items-center justify-center shrink-0" style={{ background: `${d.tint}18` }}><Check size={10} style={{ color: d.tint }} strokeWidth={3} /></span>
+                          {p}
+                        </li>
+                      ))}
+                    </ul>
+                    <button type="button" onClick={() => openAuth(d.role, "login")}
+                      className="mt-auto inline-flex items-center justify-center gap-1.5 py-3 px-5 text-white font-bold text-xs rounded-full transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]">
+                      Sign in as {ROLE_CONFIG[d.role].label.toLowerCase()} <ArrowUpRight size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* School registration / pricing */}
+            <div id="register" className="rounded-3xl bg-[#EAF6EF] border border-[#178754]/15 p-6 sm:p-8">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div>
+                  <span className="ecw-body inline-block text-[11px] font-bold text-[#136040] bg-white px-3 py-1 rounded-full mb-3">School registration</span>
+                  <p className="ecw-heading text-3xl font-extrabold text-neutral-900">150,000 RWF <span className="ecw-body text-sm font-medium text-neutral-500">/ term</span></p>
+                  <p className="ecw-body text-[13px] text-neutral-600 mt-2 max-w-lg">Includes notes, quizzes, report cards and a school code to add your staff and students. Your code is emailed to you once your school is approved.</p>
+                </div>
+                <button type="button" onClick={goRegister} disabled={isRegisterLoading}
+                  className="whitespace-nowrap inline-flex items-center justify-center gap-2 py-3.5 px-7 text-white font-bold text-sm rounded-full transition-all hover:-translate-y-0.5 active:scale-[0.98] bg-[#178754] shadow-lg shadow-[#178754]/30 disabled:opacity-90 disabled:cursor-not-allowed">
+                  {isRegisterLoading ? "Loading…" : "Register my school"}
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-2.5 pt-5 mt-6 border-t border-[#178754]/15 items-center">
+                <span className="ecw-body text-[11px] font-bold text-neutral-500 mr-1">Pay with</span>
+                <span className="ecw-body flex items-center gap-2 text-[12px] font-bold px-4 py-2 rounded-full bg-yellow-50 text-yellow-700 border border-yellow-200"><Smartphone size={16} /> MTN Money</span>
+                <span className="ecw-body flex items-center gap-2 text-[12px] font-bold px-4 py-2 rounded-full bg-red-50 text-red-700 border border-red-200"><Smartphone size={16} /> Airtel Money</span>
+                <span className="ecw-body flex items-center gap-2 text-[12px] font-bold px-4 py-2 rounded-full bg-blue-50 text-[rgb(22,32,111)] border border-blue-200"><Landmark size={16} /> Bank transfer</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* LIVE DASHBOARD */}
+        <section id="dashboard" className="py-20 bg-neutral-50 border-y border-neutral-100">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <SectionHead tag="Live dashboard" title="See the school's whole term at a glance" />
+            <div className="rounded-3xl border border-neutral-200 overflow-hidden bg-white shadow-xl shadow-neutral-200/60">
+              <div className="bg-neutral-50 px-4 py-3 flex items-center gap-1.5 border-b border-neutral-200">
+                <span className="w-2.5 h-2.5 rounded-full bg-neutral-300" /><span className="w-2.5 h-2.5 rounded-full bg-neutral-300" /><span className="w-2.5 h-2.5 rounded-full bg-neutral-300" />
+                <span className="ecw-body text-[11px] text-neutral-400 ml-3">app.easyclasswork.rw/dashboard</span>
+              </div>
+              <div className="w-full aspect-[16/9] bg-gradient-to-br from-[#EAF6EF] to-white">
+                <img src={dashboard} alt="Dashboard preview" className="w-full h-full object-cover" />
+              </div>
+            </div>
+
+            <div ref={statsRef} className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-8">
+              {STATS.map(({ pct, color, value, label }) => {
+                const shownPct = statsVisible ? pct : 0;
+                return (
+                  <div key={label} className="flex items-center gap-4 bg-white rounded-3xl border border-neutral-100 p-4">
+                    <svg width="64" height="64" viewBox="0 0 76 76" className="shrink-0">
+                      <circle cx="38" cy="38" r="30" fill="none" stroke="#EEF1F6" strokeWidth="8" />
+                      <circle cx="38" cy="38" r="30" fill="none" stroke={color} strokeWidth="8" strokeLinecap="round"
+                        strokeDasharray="188.5" strokeDashoffset={188.5 - (188.5 * shownPct) / 100}
+                        transform="rotate(-90 38 38)" style={{ transition: "stroke-dashoffset 1.1s cubic-bezier(0.16, 1, 0.3, 1)" }} />
+                    </svg>
+                    <div>
+                      <p className="ecw-heading text-lg font-extrabold text-neutral-900 leading-none">{value}</p>
+                      <p className="ecw-body text-[11px] text-neutral-500 mt-1">{label}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* TEAM */}
+        <section id="team" className="py-20 bg-white">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <SectionHead tag="Our team" title="The people who built ESMS" />
+            <div className="ecw-team-strip flex gap-4 overflow-x-auto pb-2" style={{ scrollSnapType: "x mandatory" }}>
+              {TEAM.map((m) => (
+                <div key={m.name} style={{ scrollSnapAlign: "start" }} className="flex flex-col items-center text-center bg-neutral-50 rounded-3xl border border-neutral-100 p-6 hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-56 shrink-0">
+                  <span className="w-24 h-24 rounded-full bg-white mb-4 p-1" style={{ boxShadow: `0 0 0 4px ${m.tint}22` }}>
+                    <img src={m.image} alt={`${m.name} portrait`} className="w-full h-full rounded-full object-cover" />
+                  </span>
+                  <p className="ecw-heading font-bold text-sm text-neutral-900">{m.name}</p>
+                  <p className="ecw-body text-xs mt-0.5" style={{ color: m.tint }}>{m.role}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* TESTIMONIALS */}
+        <section className="py-20 bg-neutral-50 border-y border-neutral-100">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8">
+            <SectionHead tag="In their words" title="Teachers who use it every day" />
+            <div className="grid md:grid-cols-3 gap-4">
+              {TESTIMONIALS.map((t) => (
+                <figure key={t.name} className="flex flex-col bg-white rounded-3xl p-6 border border-neutral-100 hover:shadow-lg transition-shadow duration-300">
+                  <Quote className="w-7 h-7 mb-3" style={{ color: t.tint, opacity: 0.4 }} aria-hidden="true" />
+                  <blockquote className="ecw-body text-[13px] text-neutral-700 leading-relaxed mb-5">{t.quote}</blockquote>
+                  <figcaption className="mt-auto flex items-center gap-3">
+                    <span className="w-9 h-9 rounded-full text-white text-xs font-bold flex items-center justify-center" style={{ background: t.tint }}>{t.name.charAt(0)}</span>
+                    <span>
+                      <span className="block ecw-heading text-xs font-bold text-neutral-900">{t.name}</span>
+                      <span className="block ecw-body text-[11px] text-neutral-500">{t.role}</span>
+                    </span>
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* CONTACT */}
+        <section id="contact" className="py-20 bg-white">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8 grid md:grid-cols-2 gap-10 items-center">
+            <Reveal>
+              <span className="inline-block text-[11px] font-bold px-3 py-1 rounded-full mb-3 text-[#178754] bg-[#178754]/10">Contact</span>
+              <h2 className="ecw-heading text-3xl sm:text-4xl font-extrabold text-neutral-900 mb-3">Talk to us before you sign up</h2>
+              <p className="ecw-body text-sm text-neutral-600 leading-relaxed mb-6 max-w-md">
+                Questions about pricing, your school code, or switching partway through a term?
+                Reach the helpline and someone will walk you through it.
+              </p>
+              <div className="flex flex-col gap-1.5 text-sm ecw-body text-neutral-700">
+                <p>support@classwork.rw</p>
+                <p>+250 788 000 000</p>
+                <p>Kigali, Rwanda</p>
+              </div>
+            </Reveal>
+            <div className="bg-neutral-50 rounded-3xl p-6 border border-neutral-100">
+              <div className="flex flex-col gap-3">
+                <input type="text" placeholder="Full name" className={INPUT} />
+                <input type="text" placeholder="School name" className={INPUT} />
+                <textarea placeholder="How can we help?" rows="4" className={INPUT}></textarea>
+                <button type="button" className="w-full py-3.5 text-white font-bold text-sm rounded-full transition-all hover:opacity-90 active:scale-[0.98] bg-[rgb(22,32,111)]">Send message</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* FOOTER */}
+        <footer className="text-white pt-14 bg-[rgb(22,32,111)]">
+          <div className="max-w-6xl mx-auto px-5 sm:px-8 pb-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
+            <div className="flex flex-col gap-3 lg:col-span-2">
+              <div className="flex items-center gap-2.5">
+                <span className="w-11 h-11 rounded-full bg-white/10 overflow-hidden shrink-0"><img src={esms} alt="ESMS logo" className="w-full h-full object-cover" /></span>
+                <span className="ecw-heading font-extrabold text-base">ESMS</span>
+              </div>
+              <p className="ecw-body text-xs text-white/70 leading-relaxed max-w-xs">
+                Academic records and classroom tools built for primary and secondary schools across Rwanda.
+              </p>
+            </div>
+            <div>
+              <h4 className="ecw-heading font-bold text-sm mb-3">Explore</h4>
+              <ul className="flex flex-col gap-2 text-xs ecw-body text-white/70">
+                <li><a href="#services" className="hover:text-white transition-colors">Services</a></li>
+                <li><a href="#how-it-works" className="hover:text-white transition-colors">How it works</a></li>
+                <li><a href="#dashboards" className="hover:text-white transition-colors">Dashboards</a></li>
+                <li><a href="#team" className="hover:text-white transition-colors">Our team</a></li>
+              </ul>
+            </div>
+            <div>
+              <h4 className="ecw-heading font-bold text-sm mb-3">Helpline</h4>
+              <ul className="flex flex-col gap-2 text-xs ecw-body text-white/70">
+                <li>support@classwork.rw</li>
+                <li>+250 788 000 000</li>
+                <li>Kigali, Rwanda</li>
+              </ul>
+            </div>
+          </div>
+          <div className="border-t border-white/10 py-4 px-5 sm:px-8">
+            <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-3 text-[11px] ecw-body text-white/60">
+              <p>© 2026 Easy ClassWork Records. All rights reserved.</p>
+              <div className="flex gap-4">
+                <a href="#home" className="hover:text-white transition-colors">Privacy policy</a>
+                <a href="#home" className="hover:text-white transition-colors">Terms of service</a>
+                <a href="#contact" className="hover:text-white transition-colors">Contact</a>
+              </div>
+            </div>
+          </div>
+        </footer>
+      </div>
     </>
   );
 }
