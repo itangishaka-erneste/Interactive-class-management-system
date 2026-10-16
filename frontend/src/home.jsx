@@ -335,8 +335,8 @@ function ModalShell({ onClose, children, size = "max-w-md" }) {
 function ModalHeader({ icon: Icon, eyebrow, title, onClose }) {
   return (
     <div className="sticky top-0 z-10 bg-white/95 backdrop-blur flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
-      <span className="w-11 h-11 shrink-0 rounded-2xl bg-[#EAF6EF] flex items-center justify-center ring-1 ring-[#178754]/20">
-        <Icon className="w-5 h-5 text-[#178754]" aria-hidden="true" />
+      <span className="w-11 h-11 shrink-0 rounded-2xl bg-[#EAF6EF] overflow-hidden flex items-center justify-center ring-1 ring-[#178754]/20">
+        <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-[10px] font-bold text-green-700">{eyebrow}</p>
@@ -479,8 +479,8 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
   return (
     <ModalShell onClose={onClose} size="max-w-sm">
       <div className="px-6 py-8 text-center">
-        <span className="w-14 h-14 rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-4 ring-1 ring-amber-200">
-          <Clock3 className="w-6 h-6 text-amber-600" />
+        <span className="w-14 h-14 rounded-full bg-amber-50 overflow-hidden flex items-center justify-center mx-auto mb-4 ring-1 ring-amber-200">
+          <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
         </span>
         <h3 className="ecw-heading text-lg font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
         <p className="text-xs text-neutral-500 leading-relaxed mb-6">
