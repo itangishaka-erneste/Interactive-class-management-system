@@ -1413,7 +1413,7 @@ export default function Student({ onSignOut }) {
             <>
               <div className="relative overflow-hidden rounded-lg border border-gray-200 bg-white text-gray-900 flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-md">
                 <div className="max-w-[36rem]">
-                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, {studentName || t.guest}!</h2>
+                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, <span style={{ color: "#E8753D" }}>{studentName || t.guest}</span>!</h2>
                   <p className="text-gray-600 text-xs mb-3">
                     {t.welcomeSub1} <span className="font-bold text-gray-900">{notes.length}</span> {t.welcomeSub2}{" "}
                     <span className="font-bold text-gray-900">{pendingQuizzes.length}</span> {t.welcomeSub3}
