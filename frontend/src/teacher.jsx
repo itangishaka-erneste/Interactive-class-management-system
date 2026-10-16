@@ -1235,6 +1235,8 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
   const [fileUrl, setFileUrl] = useState(initial.fileUrl || '');
   const [fileType, setFileType] = useState(initial.fileType || '');
   const [fileName, setFileName] = useState(initial.fileName || '');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadError, setUploadError] = useState('');
   const [assignment, setAssignment] = useState(() => {
     if (initial.classId) return { classId: initial.classId, subject: initial.subject, className: initial.className };
     return assignments.length === 1 ? assignments[0] : null;
@@ -1340,7 +1342,26 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18 }}>
         <p className="td-heading" style={{ margin: '0 0 6px', fontSize: 12.5, fontWeight: 700, color: t.text }}>Attach a file (optional)</p>
-        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Paste a link to an image, video, or PDF that is already hosted online.</p>
+        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Upload a PDF or other file, or paste a link to a file hosted online.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <input type="file" aria-label="Choose a file to attach" onChange={(e) => { setUploadFile(e.target.files?.[0] || null); setUploadError(''); }} />
+          <PrimaryButton variant="blue" disabled={!uploadFile || !!busy} onClick={() => {
+            if (!uploadFile) return;
+            if (uploadFile.size > 10 * 1024 * 1024) { setUploadError('File must be 10 MB or smaller.'); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+              setFileUrl(String(reader.result));
+              setFileName(uploadFile.name);
+              setFileType(uploadFile.type.startsWith('image/') ? 'image' : uploadFile.type === 'application/pdf' ? 'pdf' : uploadFile.type.startsWith('video/') ? 'video' : 'file');
+              setUploadError('');
+              setUploadFile(null);
+            };
+            reader.onerror = () => setUploadError('Could not read this file. Please try again.');
+            reader.readAsDataURL(uploadFile);
+          }}>Add file</PrimaryButton>
+          {uploadFile && <span style={{ fontSize: 12, color: t.subtext }}>{uploadFile.name}</span>}
+        </div>
+        {uploadError && <p role="alert" style={{ margin: '0 0 8px', color: t.red, fontSize: 12 }}>{uploadError}</p>}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 8 }}>
           <input value={fileUrl} onChange={(e) => setFileUrl(e.target.value)} placeholder="https://…" aria-label="File link" style={inputStyle} />
           <select value={fileType} onChange={(e) => setFileType(e.target.value)} aria-label="File type" style={inputStyle}>
@@ -1352,7 +1373,10 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
           </select>
         </div>
         {fileUrl.trim() && (
-          <input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="Display name for this file (optional)" aria-label="File display name" style={{ ...inputStyle, marginTop: 8 }} />
+          <div style={{ marginTop: 8, padding: 10, background: t.panel, borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <input value={fileName} onChange={(e) => setFileName(e.target.value)} placeholder="Display name for this file (optional)" aria-label="File display name" style={{ ...inputStyle, flex: '1 1 220px' }} />
+            <a href={fileUrl} target="_blank" rel="noreferrer" style={{ color: t.blue, fontSize: 12, fontWeight: 600 }}>View attached file: {fileName || 'Open file'}</a>
+          </div>
         )}
       </div>
 
