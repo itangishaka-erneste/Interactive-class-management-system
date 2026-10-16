@@ -4,10 +4,34 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/webp" href="/logo.webp" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <title>Class Records</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      (() => {
+        const updateTitle = () => {
+          const page = window.location.pathname
+            .split("/")
+            .filter(Boolean)
+            .pop();
+          document.title = page
+            ? `${page.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())} | Class Records`
+            : "Class Records";
+        };
+
+        ["pushState", "replaceState"].forEach((method) => {
+          const original = history[method];
+          history[method] = function (...args) {
+            const result = original.apply(this, args);
+            updateTitle();
+            return result;
+          };
+        });
+        window.addEventListener("popstate", updateTitle);
+        updateTitle();
+      })();
+    </script>
   </body>
 </html>
