@@ -454,14 +454,13 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
         w-[80%] max-w-[18rem] p-6
         ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       >
-        <div className="flex items-center justify-between mb-6">
-          <span className="flex items-center gap-2 font-extrabold text-[13px] leading-tight" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>
-            <a href="/" className="flex h-9 w-9 items-center justify-center rounded-lg bg-white border border-green-100 overflow-hidden" aria-label={`${t.brand} home`}>
-              <img src="/logo.png" alt={`${t.brand} logo`} className="h-full w-full object-contain" onError={(event) => { event.currentTarget.style.display = "none"; }} />
-              <School size={18} className="text-green-700" />
-            </a>
-            <a href="/" className="inline-flex" aria-label={t.brand}>{t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ animationDelay: `${index * 0.12}s`, color: index % 2 ? GREEN : ORANGE }}>{letter}</span>)}</a>
-          </span>
+        <div className="relative mb-6 flex flex-col items-center border-b border-gray-100 pb-5">
+          <a href="/" className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-xl border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
+            <img src="https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=320&q=80" alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
+          </a>
+          <a href="/" className="mt-2 text-xl font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
+            {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} style={{ color: index % 2 ? GREEN : ORANGE }}>{letter}</span>)}
+          </a>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
             <X className="w-[1.125rem] h-[1.125rem]" />
           </button>
@@ -1322,9 +1321,6 @@ export default function Student({ onSignOut }) {
   const averageScore = doneQuizzes.length
     ? Math.round(doneQuizzes.reduce((sum, q) => sum + (q.attempt?.scorePercent || 0), 0) / doneQuizzes.length) + "%"
     : "—";
-  const quizCompletion = quizzes.length
-    ? `${Math.round((doneQuizzes.length / quizzes.length) * 100)}%`
-    : "—";
 
   const stats = [
     { label: t.notesAvailable, value: notes.length, icon: BookOpen, tint: BLUE_SOFT, ink: BLUE, key: "notes" },
@@ -1413,11 +1409,10 @@ export default function Student({ onSignOut }) {
             <>
               <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-xl" style={{ background: `linear-gradient(120deg, ${GREEN}, #166534 65%, ${ORANGE})` }}>
                 <div className="max-w-[36rem]">
-                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}!</h2>
+                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, {studentName || t.guest}!</h2>
                   <p className="text-white/80 text-xs mb-3">
                     {t.welcomeSub1} <span className="font-bold text-white">{notes.length}</span> {t.welcomeSub2}{" "}
                     <span className="font-bold text-white">{pendingQuizzes.length}</span> {t.welcomeSub3}
-                    <span className="ml-1">Quiz completion: <strong className="text-white">{quizCompletion}</strong></span>
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={openClassPicker} className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5 hover:bg-white/10 transition-colors">
