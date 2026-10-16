@@ -489,7 +489,10 @@ function Sidebar({ section, go, counts, sidebarOpen, setSidebarOpen, adminEmail,
     </div>
   );
 }
-function Header({ setSidebarOpen, title, onRefresh, refreshing, live, notifCount, onNotifClick }) {
+function Header({ setSidebarOpen, title, onRefresh, refreshing, live, notifCount, onNotifClick, adminEmail, onSignOut }) {
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profilePicture, setProfilePicture] = useState(() => { try { return localStorage.getItem('ecw_superadmin_profile_picture') || ''; } catch { return ''; } });
+  const profileInput = useRef(null);
   return (
     <div style={{ minHeight: 60, borderBottom: `1px solid ${t.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 20px', gap: 12, background: '#fff', flexWrap: 'wrap' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
@@ -511,6 +514,17 @@ function Header({ setSidebarOpen, title, onRefresh, refreshing, live, notifCount
           {notifCount > 0 && (
             <span style={{ position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, padding: '0 4px', borderRadius: 8, background: t.brand, color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', border: '2px solid #fff' }}>{notifCount > 9 ? '9+' : notifCount}</span>
           )}
+        </div>
+        <div style={{ position: 'relative' }}>
+          <button type="button" aria-label="Super admin profile" title="Profile" onClick={() => setProfileOpen(open => !open)} style={{ width: 36, height: 36, borderRadius: '50%', padding: 0, overflow: 'hidden', border: `2px solid ${t.border}`, background: t.brandSoft, color: t.brand, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700 }}>
+            {profilePicture ? <img src={profilePicture} alt="Profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (adminEmail?.[0] || 'A').toUpperCase()}
+          </button>
+          {profileOpen && <div style={{ position: 'absolute', right: 0, top: 44, zIndex: 80, width: 220, padding: 12, background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, boxShadow: t.shadowLg }}>
+            <div style={{ fontSize: 12, color: t.subtext, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 10 }}>{adminEmail}</div>
+            <input ref={profileInput} type="file" accept="image/*" hidden onChange={e => { const file = e.target.files?.[0]; if (!file) return; if (!file.type.startsWith('image/')) return; const reader = new FileReader(); reader.onload = () => { const image = String(reader.result || ''); setProfilePicture(image); try { localStorage.setItem('ecw_superadmin_profile_picture', image); } catch { /* storage unavailable */ } }; reader.readAsDataURL(file); e.target.value = ''; }} />
+            <button type="button" onClick={() => profileInput.current?.click()} style={{ width: '100%', textAlign: 'left', padding: '9px 8px', border: 'none', borderRadius: 7, background: t.panel, color: t.text, cursor: 'pointer', fontSize: 12, fontWeight: 600, marginBottom: 7 }}>Add / change profile picture</button>
+            <button type="button" onClick={() => { setProfileOpen(false); onSignOut(); }} style={{ width: '100%', textAlign: 'left', padding: '9px 8px', border: 'none', borderRadius: 7, background: t.redSoft, color: t.red, cursor: 'pointer', fontSize: 12, fontWeight: 700 }}>Sign out</button>
+          </div>}
         </div>
       </div>
     </div>
@@ -1101,7 +1115,7 @@ export default function SuperAdminDashboard() {
           </div>
         )}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-          <Header setSidebarOpen={setSidebarOpen} title={titles[section]} onRefresh={fetchSchools} refreshing={schoolsLoading} live={live} notifCount={notifCount} onNotifClick={() => go('schools')} />
+          <Header setSidebarOpen={setSidebarOpen} title={titles[section]} onRefresh={fetchSchools} refreshing={schoolsLoading} live={live} notifCount={notifCount} onNotifClick={() => go('schools')} adminEmail={session.email} onSignOut={() => endSession()} />
           <div className="pa-scroll" style={{ flex: 1, overflowY: 'auto' }}>
             {flash && <div className="pa-page-pad" style={{ padding: '16px 22px 0' }}><Flash flash={flash} onClose={() => setFlash(null)} /></div>}
             {section === 'overview' && <Overview schools={schools} go={go} loading={schoolsLoading} />}
