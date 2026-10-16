@@ -837,7 +837,6 @@ function Header({ selectedClass, setSelectedClass, filterOptions, selectedSubjec
         <Dropdown value={selectedSubject} options={subjectOptions} onChange={setSelectedSubject} icon={BookOpen} />
         <PrimaryButton variant="outline" icon={Plus} onClick={onNewNote}>New note</PrimaryButton>
         <PrimaryButton variant="soft" icon={Plus} onClick={onNewQuiz}>New quiz</PrimaryButton>
-        <PrimaryButton variant="soft" icon={Zap} onClick={onNewQuiz}>Prepare game</PrimaryButton>
       </div>
     </div>
   );
