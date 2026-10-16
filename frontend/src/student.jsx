@@ -31,12 +31,12 @@ import {
 /* ============================================================================
    BRAND COLORS — Matching Teacher & School Admin Dashboards exactly
    ============================================================================ */
-const BLUE = "#178754";
-const BLUE_SOFT = "#EAF6EF";
-const GREEN = "#178754";
-const GREEN_SOFT = "#EAF6EF";
-const ORANGE = "#F97316";
-const ORANGE_SOFT = "#FFF1E6";
+const BLUE = "#F04416";
+const BLUE_SOFT = "#FFF0E9";
+const GREEN = "#EA4B18";
+const GREEN_SOFT = "#FFF0E9";
+const ORANGE = "#FF4500";
+const ORANGE_SOFT = "#FFF0E9";
 const RED = "#DC2626";
 const RED_SOFT = "#FEECEC";
 
@@ -442,8 +442,9 @@ function ChooseClassModal({ classes, loading, saving, error, onPick, allowClose,
 /* ============================================================================
    SIDEBAR & UI COMPONENTS
    ============================================================================ */
-function Sidebar({ open, onClose, active, setActive, t, studentName, studentImage, onChangePhoto, onSignOut }) {
+function Sidebar({ open, onClose, active, setActive, t, studentName, studentImage, onChangePhoto }) {
   const photoInputRef = useRef(null);
+  const [profileOpen, setProfileOpen] = useState(false);
   return (
     <>
       {open && <div className="fixed inset-0 bg-black/30 z-30 lg:hidden" onClick={onClose} />}
@@ -454,26 +455,13 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
         ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       >
         <div className="flex items-center justify-between mb-6">
-          <span className="font-extrabold text-[13px] leading-tight" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>
-            {t.brand}
+          <span className="flex items-center gap-2 font-extrabold text-[13px] leading-tight" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg text-white" style={{ background: BLUE }} aria-hidden="true"><School size={16} /></span>
+            <span className="inline-flex" aria-label={t.brand}>{t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ animationDelay: `${index * 0.12}s` }}>{letter}</span>)}</span>
           </span>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
             <X className="w-[1.125rem] h-[1.125rem]" />
           </button>
-        </div>
-
-        <div className="border border-gray-100 rounded-lg flex items-center gap-3 p-4 mb-6">
-          {studentImage ? (
-            <img src={studentImage} alt={`${studentName || t.guest}'s profile`} referrerPolicy="no-referrer" className="rounded-full object-cover shrink-0 w-10 h-10" onError={(event) => { event.currentTarget.style.display = "none"; }} />
-          ) : (
-            <div className="rounded-full text-white flex items-center justify-center font-bold shrink-0 w-10 h-10 text-base" style={{ background: BLUE }}>
-              {studentName ? studentName.charAt(0).toUpperCase() : "S"}
-            </div>
-          )}
-          <div className="min-w-0">
-            <p className="font-semibold text-gray-900 truncate text-[13px]">{studentName || t.guest}</p>
-            <p className="font-medium tracking-wide text-[11px]" style={{ color: GREEN }}>{t.guestRole}</p>
-          </div>
         </div>
 
         <nav className="flex flex-col flex-1 gap-1">
@@ -483,7 +471,7 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
               <button
                 key={key}
                 onClick={() => { setActive(key); onClose(); }}
-                className="flex items-center justify-between rounded-md font-medium transition-colors py-2.5 px-3 text-[13px]"
+                className="flex items-center justify-between rounded-md font-medium transition-all duration-200 hover:translate-x-1 py-2.5 px-3 text-[13px]"
                 style={{ background: isActive ? BLUE : "transparent", color: isActive ? "white" : "#475569" }}
               >
                 <span className="flex items-center gap-2.5">
@@ -525,15 +513,18 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
             <span className="text-xs font-semibold text-gray-700">Change profile picture</span>
           </button>
         </div>
-        <button
-          onClick={onSignOut}
-          className="flex items-center rounded-md font-medium gap-2.5 py-2.5 px-3 text-[13px] mt-2"
-          style={{ color: ORANGE }}
-        >
-          <LogOut className="w-[0.9375rem] h-[0.9375rem]" />
-          {t.signOut}
-        </button>
       </aside>
+      {profileOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-4 py-6" role="dialog" aria-modal="true" onClick={() => setProfileOpen(false)}>
+          <div className="relative w-full max-w-sm rounded-2xl bg-white p-7 text-center shadow-2xl animate-[profileIn_.25s_ease-out]" onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setProfileOpen(false)} className="absolute right-4 top-4 rounded-full p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600 transition-colors" aria-label="Close"><X size={18} /></button>
+            {studentImage ? <img src={studentImage} alt="Profile" className="mx-auto mb-4 h-40 w-40 rounded-full border-4 border-orange-100 object-cover shadow-lg" /> : <div className="mx-auto mb-4 flex h-40 w-40 items-center justify-center rounded-full border-4 border-orange-100 text-5xl font-bold text-white shadow-lg" style={{ background: ORANGE }}>{studentName ? studentName.charAt(0).toUpperCase() : "S"}</div>}
+            <h3 className="mb-1 text-lg font-extrabold text-gray-900">{studentName || t.guest}</h3>
+            <p className="mb-5 text-xs font-semibold tracking-wide" style={{ color: ORANGE }}>{t.guestRole}</p>
+            <button type="button" onClick={() => photoInputRef.current?.click()} className="w-full rounded-xl px-4 py-3 text-sm font-bold text-white transition-all hover:scale-[1.02] hover:shadow-lg" style={{ background: ORANGE }}>Change profile picture</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -1376,7 +1367,6 @@ export default function Student({ onSignOut }) {
         studentName={studentName}
         studentImage={studentImage}
         onChangePhoto={changeProfilePhoto}
-        onSignOut={handleSignOut}
       />
 
       <div className="flex-1 min-w-0 flex flex-col">
@@ -1406,7 +1396,7 @@ export default function Student({ onSignOut }) {
             >
               <Languages size={13} /> {t.langSwitch}
             </button>
-            <button className="rounded-full border border-gray-200 text-gray-500 hover:bg-blue-50 flex items-center justify-center w-8 h-8">
+            <button type="button" onClick={() => setSidebarOpen(true)} className="rounded-full border border-gray-200 text-gray-500 hover:bg-orange-50 hover:border-orange-300 transition-all hover:scale-110 flex items-center justify-center w-8 h-8" aria-label="Open profile menu">
               <Moon className="w-[0.9375rem] h-[0.9375rem]" />
             </button>
           </div>
@@ -1415,7 +1405,7 @@ export default function Student({ onSignOut }) {
         <main className="flex-1 overflow-y-auto px-[4%] pb-8">
           {active === "home" && (
             <>
-              <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6" style={{ background: BLUE }}>
+              <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-xl" style={{ background: `linear-gradient(120deg, ${ORANGE}, #D93616)` }}>
                 <div className="max-w-[36rem]">
                   <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, {studentName || t.guest}!</h2>
                   <p className="text-white/80 text-xs mb-3">
@@ -1428,14 +1418,6 @@ export default function Student({ onSignOut }) {
                     </button>
                     <span className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5"><Gift className="w-3 h-3" /> Academic Year</span>
                   </div>
-                </div>
-                <div className="relative flex shrink-0 items-center justify-center bg-white/10 border border-white/20 rounded-full w-10 h-10 sm:w-12 sm:h-12 ml-4 overflow-hidden">
-                  {studentImage ? (
-                    <img src={studentImage} alt={`${studentName || t.guest}'s profile`} referrerPolicy="no-referrer" className="w-full h-full object-cover" onError={() => setStudentImage("")} />
-                  ) : (
-                    <span className="font-bold text-white text-lg" aria-label={studentName || t.guest}>{studentName ? studentName.charAt(0).toUpperCase() : <User className="w-[55%] h-[55%]" aria-hidden="true" />}</span>
-                  )}
-                  <span className="absolute bottom-0 right-0 w-3 h-3 sm:w-3.5 sm:h-3.5 rounded-full border-2" style={{ background: GREEN, borderColor: BLUE }} />
                 </div>
               </div>
 
