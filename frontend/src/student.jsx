@@ -456,12 +456,12 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
         ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       >
         <div className="relative mb-6 flex items-center justify-center gap-3 border-b border-gray-100 pb-5">
-          <a href="/" className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} logo`}>
             <img src={logo} alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
-          </a>
-          <a href="/" className="text-base font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
+          </div>
+          <div className="text-base font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
             {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ color: index % 2 ? GREEN : ORANGE, animationDelay: `${index * 0.12}s` }}>{letter}</span>)}
-          </a>
+          </div>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
             <X className="w-[1.125rem] h-[1.125rem]" />
           </button>
