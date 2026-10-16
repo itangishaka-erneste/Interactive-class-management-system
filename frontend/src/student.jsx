@@ -442,7 +442,7 @@ function ChooseClassModal({ classes, loading, saving, error, onPick, allowClose,
 /* ============================================================================
    SIDEBAR & UI COMPONENTS
    ============================================================================ */
-function Sidebar({ open, onClose, active, setActive, t, studentName, studentImage, onChangePhoto }) {
+function Sidebar({ open, onClose, active, setActive, t, studentName, studentImage, onChangePhoto, onSignOut }) {
   const photoInputRef = useRef(null);
   const [profileOpen, setProfileOpen] = useState(false);
   return (
@@ -454,11 +454,11 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
         w-[80%] max-w-[18rem] p-6
         ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       >
-        <div className="relative mb-6 flex flex-col items-center border-b border-gray-100 pb-5">
-          <a href="/" className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-xl border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
+        <div className="relative mb-6 flex items-center justify-center gap-3 border-b border-gray-100 pb-5">
+          <a href="/" className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
             <img src="https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=320&q=80" alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
           </a>
-          <a href="/" className="mt-2 text-xl font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
+          <a href="/" className="text-base font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
             {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} style={{ color: index % 2 ? GREEN : ORANGE }}>{letter}</span>)}
           </a>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
@@ -501,9 +501,10 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
           />
           <button
             type="button"
-            onClick={() => photoInputRef.current?.click()}
+            onClick={() => setProfileOpen((value) => !value)}
+            aria-expanded={profileOpen}
             className="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left hover:bg-green-50"
-            title="Change profile picture"
+            title="Profile options"
           >
             {studentImage ? (
               <img src={studentImage} alt="Profile" className="h-12 w-12 rounded-full object-cover ring-2 ring-green-100" />
@@ -512,8 +513,15 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
                 {studentName ? studentName.charAt(0).toUpperCase() : "S"}
               </span>
             )}
-            <span className="text-xs font-semibold text-gray-700">Change profile picture</span>
+            <span className="min-w-0 flex-1 text-xs font-semibold text-gray-700">{studentName || t.guest}<span className="block text-[10px] text-gray-400">Profile options</span></span>
+            <ChevronRight size={15} className={`text-gray-400 transition-transform ${profileOpen ? "rotate-90" : ""}`} />
           </button>
+          {profileOpen && (
+            <div className="ml-3 mt-1 overflow-hidden rounded-lg border border-gray-100 bg-white shadow-sm">
+              <button type="button" onClick={() => { setProfileOpen(false); photoInputRef.current?.click(); }} className="w-full px-3 py-2.5 text-left text-xs font-semibold text-gray-700 hover:bg-green-50">Change profile picture</button>
+              <button type="button" onClick={onSignOut} className="flex w-full items-center gap-2 border-t border-gray-100 px-3 py-2.5 text-left text-xs font-semibold text-red-600 hover:bg-red-50"><LogOut size={14} /> {t.signOut}</button>
+            </div>
+          )}
         </div>
       </aside>
       {profileOpen && (
@@ -1369,6 +1377,7 @@ export default function Student({ onSignOut }) {
         studentName={studentName}
         studentImage={studentImage}
         onChangePhoto={changeProfilePhoto}
+        onSignOut={handleSignOut}
       />
 
       <div className="flex-1 min-w-0 flex flex-col">
