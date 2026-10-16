@@ -1411,18 +1411,18 @@ export default function Student({ onSignOut }) {
         <main className="flex-1 overflow-y-auto px-[4%] pb-8">
           {active === "home" && (
             <>
-              <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-xl" style={{ background: `linear-gradient(120deg, ${GREEN}, #166534 65%, ${ORANGE})` }}>
+              <div className="relative overflow-hidden rounded-lg border border-gray-200 bg-white text-gray-900 flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-md">
                 <div className="max-w-[36rem]">
                   <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, {studentName || t.guest}!</h2>
-                  <p className="text-white/80 text-xs mb-3">
-                    {t.welcomeSub1} <span className="font-bold text-white">{notes.length}</span> {t.welcomeSub2}{" "}
-                    <span className="font-bold text-white">{pendingQuizzes.length}</span> {t.welcomeSub3}
+                  <p className="text-gray-600 text-xs mb-3">
+                    {t.welcomeSub1} <span className="font-bold text-gray-900">{notes.length}</span> {t.welcomeSub2}{" "}
+                    <span className="font-bold text-gray-900">{pendingQuizzes.length}</span> {t.welcomeSub3}
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={openClassPicker} className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5 hover:bg-white/10 transition-colors">
+                    <button type="button" onClick={openClassPicker} className="flex items-center border border-gray-200 text-gray-700 font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5 hover:bg-gray-50 transition-colors">
                       <Backpack className="w-3 h-3" /> {className || t.currentClass}
                     </button>
-                    <span className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5"><Gift className="w-3 h-3" /> Academic Year</span>
+                    <span className="flex items-center border border-gray-200 text-gray-700 font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5"><Gift className="w-3 h-3" /> Academic Year</span>
                   </div>
                 </div>
               </div>
