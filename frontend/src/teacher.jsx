@@ -741,8 +741,9 @@ function NavSection({ label, children }) {
   );
 }
 
-function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, onSignOut }) {
+function Sidebar({ section, go, notesCount, quizzesCount, teacherName, teacherImage, onChangePhoto, onRemovePhoto, onClose, onSignOut }) {
   const active = section === 'noteEditor' ? 'notes' : section === 'quizEditor' ? 'quizzes' : section;
+  const [profileOpen, setProfileOpen] = useState(false);
   return (
     <div style={{ width: 240, background: '#fff', borderRight: `1px solid ${t.border}`, padding: '18px 14px', display: 'flex', flexDirection: 'column', height: '100%', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 58, padding: '2px 4px 10px', borderBottom: `1px solid ${t.border}`, marginBottom: 16 }}>
@@ -785,10 +786,29 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, onClose, 
         </NavSection>
       </div>
 
-      <button type="button" className="td-btn" onClick={onSignOut}
-        style={{ display: 'grid', gridTemplateColumns: '18px 1fr', alignItems: 'center', gap: 11, marginTop: 12, padding: '9px 12px', borderRadius: 8, background: t.orangeSoft, color: t.orange, border: 'none', cursor: 'pointer' }}>
-        <LogOut size={15} /><span style={{ fontSize: 12.5, fontWeight: 700, textAlign: 'left' }}>Sign out</span>
+      <div style={{ position: 'relative', marginTop: 12 }}>
+      <button type="button" aria-expanded={profileOpen} aria-label="Open teacher profile menu" onClick={() => setProfileOpen((open) => !open)} className="td-btn"
+        style={{ width: '100%', padding: 10, border: `1px solid ${t.border}`, borderRadius: 10, background: '#fff', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', textAlign: 'left' }}>
+        <div style={{ width: 38, height: 38, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, background: t.blueSoft, color: t.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800 }}>
+          {teacherImage ? <img src={teacherImage} alt="Teacher profile" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (teacherName || 'T').trim().charAt(0).toUpperCase()}
+        </div>
+        <span style={{ minWidth: 0, flex: 1, fontSize: 11.5, fontWeight: 700, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{teacherName || 'Teacher'}</span>
+        <ChevronDown size={14} color={t.subtext} style={{ transform: profileOpen ? 'rotate(180deg)' : 'none' }} />
       </button>
+      {profileOpen && <div className="td-fade" style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(100% + 7px)', padding: 10, background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, boxShadow: '0 8px 24px rgba(18,20,28,0.12)', zIndex: 70 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 2px 10px' }}>
+          <label className="td-btn" style={{ fontSize: 11, color: t.blue, fontWeight: 700, cursor: 'pointer' }}>
+            {teacherImage ? 'Change picture' : 'Add picture'}
+            <input type="file" accept="image/*" onChange={onChangePhoto} aria-label="Add or change profile picture" style={{ display: 'none' }} />
+          </label>
+          {teacherImage && <button type="button" onClick={onRemovePhoto} style={{ padding: 0, border: 0, background: 'none', color: t.subtext, fontSize: 11, cursor: 'pointer' }}>Remove picture</button>}
+          </div>
+          <button type="button" className="td-btn" onClick={onSignOut}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', borderRadius: 8, background: t.orangeSoft, color: t.orange, border: 'none', cursor: 'pointer' }}>
+            <LogOut size={14} /><span style={{ fontSize: 12, fontWeight: 700 }}>Sign out</span>
+          </button>
+        </div>}
+      </div>
     </div>
   );
 }
@@ -2889,6 +2909,21 @@ export default function Teacher({ onSignOut }) {
   const [boot, setBoot] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [bootError, setBootError] = useState('');
   const [me, setMe] = useState({ fullName: '', email: '', schoolName: '' });
+  const [teacherImage, setTeacherImage] = useState(() => { try { return localStorage.getItem('ecw_teacher_profile_image') || ''; } catch { return ''; } });
+  const changeTeacherImage = (event) => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast('Choose an image file.', 'error'); event.target.value = ''; return; }
+    if (file.size > 4 * 1024 * 1024) { toast('Choose an image smaller than 4 MB.', 'error'); event.target.value = ''; return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      try { localStorage.setItem('ecw_teacher_profile_image', reader.result); setTeacherImage(reader.result); toast('Profile picture updated.'); }
+      catch { toast('Could not save this picture. Try a smaller image.', 'error'); }
+    };
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
+  const removeTeacherImage = () => { try { localStorage.removeItem('ecw_teacher_profile_image'); } catch { /* ignore */ } setTeacherImage(''); };
   const [assignments, setAssignments] = useState([]);
   const [classes, setClasses] = useState([]);
   const [notes, setNotes] = useState([]);
@@ -3288,7 +3323,7 @@ const load = useCallback(async () => {
     );
   }
 
-  const sidebarProps = { section, notesCount: notes.length, quizzesCount: quizzes.length, teacherName: me.fullName, onSignOut: handleSignOut };
+  const sidebarProps = { section, notesCount: notes.length, quizzesCount: quizzes.length, teacherName: me.fullName, teacherImage, onChangePhoto: changeTeacherImage, onRemovePhoto: removeTeacherImage, onSignOut: handleSignOut };
 
   return (
     <div className="td-root" style={{ minHeight: '100vh', color: t.text }}>
