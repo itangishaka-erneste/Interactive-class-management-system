@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { io } from "socket.io-client";
+import logo from './assets/esms.jpg';
 import {
   Home,
   BookOpen,
@@ -456,7 +457,7 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
       >
         <div className="relative mb-6 flex items-center justify-center gap-3 border-b border-gray-100 pb-5">
           <a href="/" className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
-            <img src="https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=320&q=80" alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
+            <img src={logo} alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
           </a>
           <a href="/" className="text-base font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
             {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ color: index % 2 ? GREEN : ORANGE, animationDelay: `${index * 0.12}s` }}>{letter}</span>)}
