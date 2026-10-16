@@ -31,12 +31,12 @@ import {
 /* ============================================================================
    BRAND COLORS — Matching Teacher & School Admin Dashboards exactly
    ============================================================================ */
-const BLUE = "#F04416";
-const BLUE_SOFT = "#FFF0E9";
-const GREEN = "#EA4B18";
-const GREEN_SOFT = "#FFF0E9";
+const BLUE = "#166534";
+const BLUE_SOFT = "#F0FDF4";
+const GREEN = "#15803D";
+const GREEN_SOFT = "#DCFCE7";
 const ORANGE = "#FF4500";
-const ORANGE_SOFT = "#FFF0E9";
+const ORANGE_SOFT = "#FFF1E8";
 const RED = "#DC2626";
 const RED_SOFT = "#FEECEC";
 
@@ -456,8 +456,11 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
       >
         <div className="flex items-center justify-between mb-6">
           <span className="flex items-center gap-2 font-extrabold text-[13px] leading-tight" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }}>
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg text-white" style={{ background: BLUE }} aria-hidden="true"><School size={16} /></span>
-            <span className="inline-flex" aria-label={t.brand}>{t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ animationDelay: `${index * 0.12}s` }}>{letter}</span>)}</span>
+            <a href="/" className="flex h-9 w-9 items-center justify-center rounded-lg bg-white border border-green-100 overflow-hidden" aria-label={`${t.brand} home`}>
+              <img src="/logo.png" alt={`${t.brand} logo`} className="h-full w-full object-contain" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+              <School size={18} className="text-green-700" />
+            </a>
+            <a href="/" className="inline-flex" aria-label={t.brand}>{t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ animationDelay: `${index * 0.12}s`, color: index % 2 ? GREEN : ORANGE }}>{letter}</span>)}</a>
           </span>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
             <X className="w-[1.125rem] h-[1.125rem]" />
@@ -504,9 +507,9 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
             title="Change profile picture"
           >
             {studentImage ? (
-              <img src={studentImage} alt="Profile" className="h-9 w-9 rounded-full object-cover" />
+              <img src={studentImage} alt="Profile" className="h-12 w-12 rounded-full object-cover ring-2 ring-green-100" />
             ) : (
-              <span className="flex h-9 w-9 items-center justify-center rounded-full text-sm font-bold text-white" style={{ background: GREEN }}>
+              <span className="flex h-12 w-12 items-center justify-center rounded-full text-sm font-bold text-white" style={{ background: GREEN }}>
                 {studentName ? studentName.charAt(0).toUpperCase() : "S"}
               </span>
             )}
@@ -1319,6 +1322,9 @@ export default function Student({ onSignOut }) {
   const averageScore = doneQuizzes.length
     ? Math.round(doneQuizzes.reduce((sum, q) => sum + (q.attempt?.scorePercent || 0), 0) / doneQuizzes.length) + "%"
     : "—";
+  const quizCompletion = quizzes.length
+    ? `${Math.round((doneQuizzes.length / quizzes.length) * 100)}%`
+    : "—";
 
   const stats = [
     { label: t.notesAvailable, value: notes.length, icon: BookOpen, tint: BLUE_SOFT, ink: BLUE, key: "notes" },
@@ -1405,12 +1411,13 @@ export default function Student({ onSignOut }) {
         <main className="flex-1 overflow-y-auto px-[4%] pb-8">
           {active === "home" && (
             <>
-              <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-xl" style={{ background: `linear-gradient(120deg, ${ORANGE}, #D93616)` }}>
+              <div className="relative overflow-hidden rounded-lg text-white flex items-center justify-between py-[1.15em] px-[5%] mb-6 transition-shadow duration-300 hover:shadow-xl" style={{ background: `linear-gradient(120deg, ${GREEN}, #166534 65%, ${ORANGE})` }}>
                 <div className="max-w-[36rem]">
-                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}, {studentName || t.guest}!</h2>
+                  <h2 className="font-extrabold text-base mb-1" style={{ fontFamily: "'Poppins', sans-serif" }}>{t.welcome}!</h2>
                   <p className="text-white/80 text-xs mb-3">
                     {t.welcomeSub1} <span className="font-bold text-white">{notes.length}</span> {t.welcomeSub2}{" "}
                     <span className="font-bold text-white">{pendingQuizzes.length}</span> {t.welcomeSub3}
+                    <span className="ml-1">Quiz completion: <strong className="text-white">{quizCompletion}</strong></span>
                   </p>
                   <div className="flex flex-wrap gap-2">
                     <button type="button" onClick={openClassPicker} className="flex items-center border border-white/20 text-white font-medium rounded-md gap-1.5 text-[11px] py-1.5 px-2.5 hover:bg-white/10 transition-colors">
