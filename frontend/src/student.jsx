@@ -1163,8 +1163,13 @@ export default function Student({ onSignOut }) {
     setClassError("");
     try {
       const res = await apiFetch("/api/student/class", { method: "POST", body: JSON.stringify({ classId: id }) });
-      setClassId(res.student.classId);
-      setClassName(res.student.className || "");
+      // Support both camelCase and snake_case API response fields. Without
+      // this, the selected class can be treated as missing and content fetches
+      // are skipped even though the class was saved successfully.
+      const savedStudent = res.student || {};
+      const savedClassId = savedStudent.classId ?? savedStudent.class_id ?? id;
+      setClassId(savedClassId);
+      setClassName(savedStudent.className || savedStudent.class_name || "");
       setShowClassPicker(false);
       toast("Class set. Loading your notes and quizzes…");
       await Promise.all([refreshNotes(), refreshQuizzes()]);
@@ -1197,9 +1202,9 @@ export default function Student({ onSignOut }) {
       setStudentName(student.full_name || student.fullName || student.name || sessionName);
       setStudentImage(student.profile_image || student.profileImage || student.photoURL || student.photoUrl || student.image || student.avatar || sessionImage);
 
-      const currentClassId = student.classId ?? null;
+      const currentClassId = student.classId ?? student.class_id ?? null;
       setClassId(currentClassId);
-      setClassName(student.className || "");
+      setClassName(student.className || student.class_name || "");
 
       if (currentClassId) {
         await Promise.all([refreshNotes(), refreshQuizzes()]);
