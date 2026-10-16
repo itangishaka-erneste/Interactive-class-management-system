@@ -788,6 +788,23 @@ export default function Home() {
   const [isRegisterLoading, setIsRegisterLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [adCarouselIndex, setAdCarouselIndex] = useState(0);
+  const [typedProgress, setTypedProgress] = useState("");
+
+  useEffect(() => {
+    const word = "progress";
+    let index = 0;
+    let deleting = false;
+    let timer;
+    const tick = () => {
+      index += deleting ? -1 : 1;
+      setTypedProgress(word.slice(0, index));
+      if (index >= word.length) deleting = true;
+      else if (index <= 0) deleting = false;
+      timer = setTimeout(tick, index === word.length ? 1000 : index === 0 ? 350 : deleting ? 70 : 130);
+    };
+    timer = setTimeout(tick, 130);
+    return () => clearTimeout(timer);
+  }, []);
 
   const [schools, setSchools] = useState([]);
   const [schoolsLoading, setSchoolsLoading] = useState(true);
@@ -1304,8 +1321,8 @@ export default function Home() {
 
           .ecw-highlight { background:linear-gradient(transparent 62%, rgba(255,69,0,.28) 62%); }
           .ecw-typing-highlight { display:inline-block; font-size:.78em; color:#136040; background:#EAF6EF; border-radius:.18em; padding:0 .12em; }
-          .ecw-typing-highlight span { display:inline-block; opacity:0; animation:ecw-type-letter .08s steps(1,end) forwards; animation-delay:calc(var(--letter-index) * .09s); }
-          @keyframes ecw-type-letter { to { opacity:1; } }
+          .ecw-typing-caret { width:2px; height:.8em; margin-left:2px; vertical-align:-.08em; background:#FF4500; animation:ecw-caret-blink .75s steps(1,end) infinite; }
+          @keyframes ecw-caret-blink { 50% { opacity:0; } }
 
           .ecw-browser { position:relative; border-radius:22px; overflow:hidden; background:#fff; border:1px solid #E5E7EB; box-shadow:0 30px 70px -24px rgba(22,32,111,.45); }
           .ecw-browser-bar { display:flex; align-items:center; gap:8px; padding:.65rem .9rem; background:#F6F7FB; border-bottom:1px solid #ECEEF5; }
@@ -1350,7 +1367,7 @@ export default function Home() {
                 Built for Rwandan schools
               </span>
               <h1 className="ecw-heading text-[2.6rem] sm:text-6xl font-extrabold leading-[1.02] text-neutral-900 mb-5">
-                Classwork, marks and <span className="ecw-typing-highlight" aria-label="progress."><span style={{ color: "#FF4500" }}>progress</span><span aria-hidden="true" className="ecw-typing-caret" /></span> <span className="ecw-highlight">Sorted</span> in one place.
+                Classwork, marks and <span className="ecw-typing-highlight" aria-label={`${typedProgress || "progress"}.`}><span style={{ color: "#FF4500" }}>{typedProgress}</span><span aria-hidden="true" className="ecw-typing-caret" /></span> <span className="ecw-highlight">Sorted</span> in one place.
               </h1>
               <p className="ecw-body text-[15px] text-neutral-600 leading-relaxed max-w-md mb-8">
                 Easy ClassWork Records gives every school one system for teachers, students and administrators,
