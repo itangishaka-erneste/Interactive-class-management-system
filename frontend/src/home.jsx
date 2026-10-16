@@ -335,8 +335,8 @@ function ModalShell({ onClose, children, size = "max-w-md" }) {
 function ModalHeader({ icon: Icon, eyebrow, title, onClose }) {
   return (
     <div className="sticky top-0 z-10 bg-white/95 backdrop-blur flex items-center gap-3 px-5 sm:px-6 pt-5 pb-3 border-b border-neutral-100">
-      <span className="w-11 h-11 shrink-0 rounded-2xl bg-[#EAF6EF] overflow-hidden flex items-center justify-center ring-1 ring-[#178754]/20">
-        <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
+      <span className="w-11 h-11 shrink-0 rounded-2xl bg-white p-1 overflow-hidden flex items-center justify-center ring-1 ring-[#178754]/20">
+        <img src={esms} alt="ESMS logo" className="w-full h-full object-contain" />
       </span>
       <div className="flex-1 min-w-0">
         <p className="text-[10px] font-bold text-green-700">{eyebrow}</p>
@@ -479,8 +479,8 @@ function PendingApprovalModal({ roleLabel, schoolName, onClose }) {
   return (
     <ModalShell onClose={onClose} size="max-w-sm">
       <div className="px-6 py-8 text-center">
-        <span className="w-14 h-14 rounded-full bg-amber-50 overflow-hidden flex items-center justify-center mx-auto mb-4 ring-1 ring-amber-200">
-          <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
+          <span className="w-14 h-14 rounded-full bg-white p-1 overflow-hidden flex items-center justify-center mx-auto mb-4 ring-1 ring-amber-200">
+          <img src={esms} alt="ESMS logo" className="w-full h-full object-contain" />
         </span>
         <h3 className="ecw-heading text-lg font-extrabold text-neutral-900 mb-1.5">Registration submitted</h3>
         <p className="text-xs text-neutral-500 leading-relaxed mb-6">
@@ -666,8 +666,8 @@ function Navbar({ onGetStarted, onOpenAuth, loading }) {
       <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
         {/* logo chip */}
         <a href="#home" className={`pointer-events-auto flex items-center gap-2.5 bg-white rounded-full pl-1.5 pr-4 py-1.5 border border-neutral-200/80 transition-shadow ${scrolled ? "shadow-lg" : "shadow-sm"}`}>
-          <span className="w-9 h-9 rounded-full bg-[#EAF6EF] overflow-hidden ring-1 ring-[#178754]/20 shrink-0">
-            <img src={esms} alt="ESMS logo" className="w-full h-full object-cover" />
+          <span className="w-9 h-9 rounded-full bg-white p-0.5 overflow-hidden ring-1 ring-[#178754]/20 shrink-0 flex items-center justify-center">
+            <img src={esms} alt="ESMS logo" className="w-full h-full object-contain" />
           </span>
           <span className="ecw-heading font-extrabold text-[15px] text-neutral-900 leading-none">ESMS</span>
         </a>
@@ -1642,7 +1642,7 @@ export default function Home() {
           <div className="max-w-6xl mx-auto px-5 sm:px-8 pb-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-8">
             <div className="flex flex-col gap-3 lg:col-span-2">
               <div className="flex items-center gap-2.5">
-                <span className="w-11 h-11 rounded-full bg-white/10 overflow-hidden shrink-0"><img src={esms} alt="ESMS logo" className="w-full h-full object-cover" /></span>
+                <span className="w-11 h-11 rounded-full bg-white p-1 overflow-hidden shrink-0 flex items-center justify-center"><img src={esms} alt="ESMS logo" className="w-full h-full object-contain" /></span>
                 <span className="ecw-heading font-extrabold text-base">ESMS</span>
               </div>
               <p className="ecw-body text-xs text-white/70 leading-relaxed max-w-xs">

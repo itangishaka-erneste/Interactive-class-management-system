@@ -1171,8 +1171,24 @@ async function askClaude({ system, prompt, maxTokens }) {
     throw httpError(502, "The AI could not answer. Please try again.");
   }
 
-  const parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-  return parts.map((p) => p.text || "").join("");
+  const candidate = data.candidates && data.candidates[0];
+  const parts = (candidate && candidate.content && candidate.content.parts) || [];
+  const text = parts.map((p) => p.text || "").join("").trim();
+  if (text) return text;
+
+  // Report common Gemini no-text outcomes instead of masking them as malformed JSON.
+  console.error("[teacher] Gemini returned no text:", JSON.stringify({
+    promptFeedback: data.promptFeedback,
+    finishReason: candidate && candidate.finishReason,
+    usageMetadata: data.usageMetadata,
+  }).slice(0, 500));
+  if (candidate && candidate.finishReason === "MAX_TOKENS") {
+    throw httpError(502, "The AI response was cut short. Please try again with a shorter request.");
+  }
+  if ((candidate && candidate.finishReason === "SAFETY") || (data.promptFeedback && data.promptFeedback.blockReason)) {
+    throw httpError(502, "The AI could not answer that request. Please rephrase it and try again.");
+  }
+  throw httpError(502, "The AI returned an empty response. Please try again.");
 }
 
 function extractJson(text) {
@@ -1283,9 +1299,9 @@ Reply as: {"title": "...", "questions": [{"question": "...", "options": [{"optio
         const options = (Array.isArray(q && q.options) ? q.options : [])
           .map((o) => ({ optionText: clean(o && o.optionText, 300), isCorrect: !!(o && o.isCorrect) }))
           .filter((o) => o.optionText)
-          .slice(0, 6);
+          .slice(0, 4);
         const correct = options.findIndex((o) => o.isCorrect);
-        if (correct < 0 || options.length < 2) return null;
+        if (correct < 0 || options.length !== 4) return null;
         options.forEach((o, i) => { o.isCorrect = i === correct; });
         return { question: clean(q.question, 1000), options: shuffle(options) };
       })
