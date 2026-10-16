@@ -771,7 +771,7 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, teacherIm
         </div>
       </div>
 
-      <div className="td-scroll" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="td-scroll" style={{ flex: '1 1 0%', minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <NavSection label="Classroom">
           <NavItem icon={BookOpen} label="Notes" count={notesCount} active={active === 'notes'} onClick={() => go('notes')} />
           <NavItem icon={PenLine} label="Quizzes" count={quizzesCount} active={active === 'quizzes'} onClick={() => go('quizzes')} />
