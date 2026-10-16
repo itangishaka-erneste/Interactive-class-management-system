@@ -455,11 +455,11 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
         ${open ? "translate-x-0" : "-translate-x-full"} lg:translate-x-0`}
       >
         <div className="relative mb-6 flex items-center justify-center gap-3 border-b border-gray-100 pb-5">
-          <a href="/" className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
+          <a href="/" className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[7px] border border-green-100 bg-white shadow-sm" aria-label={`${t.brand} home`}>
             <img src="https://images.unsplash.com/photo-1580582932707-520aed937b7b?auto=format&fit=crop&w=320&q=80" alt={`${t.brand} school logo`} className="h-full w-full object-cover" />
           </a>
           <a href="/" className="text-base font-extrabold tracking-wide" style={{ color: BLUE, fontFamily: "'Poppins', sans-serif" }} aria-label={t.brand}>
-            {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} style={{ color: index % 2 ? GREEN : ORANGE }}>{letter}</span>)}
+            {t.brand.split("").map((letter, index) => <span key={`${letter}-${index}`} className="inline-block animate-bounce" style={{ color: index % 2 ? GREEN : ORANGE, animationDelay: `${index * 0.12}s` }}>{letter}</span>)}
           </a>
           <button onClick={onClose} className="lg:hidden text-gray-400 hover:text-gray-600 p-1">
             <X className="w-[1.125rem] h-[1.125rem]" />
@@ -524,17 +524,6 @@ function Sidebar({ open, onClose, active, setActive, t, studentName, studentImag
           )}
         </div>
       </aside>
-      {profileOpen && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-4 py-6" role="dialog" aria-modal="true" onClick={() => setProfileOpen(false)}>
-          <div className="relative w-full max-w-sm rounded-2xl bg-white p-7 text-center shadow-2xl animate-[profileIn_.25s_ease-out]" onClick={(event) => event.stopPropagation()}>
-            <button type="button" onClick={() => setProfileOpen(false)} className="absolute right-4 top-4 rounded-full p-2 text-gray-400 hover:bg-orange-50 hover:text-orange-600 transition-colors" aria-label="Close"><X size={18} /></button>
-            {studentImage ? <img src={studentImage} alt="Profile" className="mx-auto mb-4 h-40 w-40 rounded-full border-4 border-orange-100 object-cover shadow-lg" /> : <div className="mx-auto mb-4 flex h-40 w-40 items-center justify-center rounded-full border-4 border-orange-100 text-5xl font-bold text-white shadow-lg" style={{ background: ORANGE }}>{studentName ? studentName.charAt(0).toUpperCase() : "S"}</div>}
-            <h3 className="mb-1 text-lg font-extrabold text-gray-900">{studentName || t.guest}</h3>
-            <p className="mb-5 text-xs font-semibold tracking-wide" style={{ color: ORANGE }}>{t.guestRole}</p>
-            <button type="button" onClick={() => photoInputRef.current?.click()} className="w-full rounded-xl px-4 py-3 text-sm font-bold text-white transition-all hover:scale-[1.02] hover:shadow-lg" style={{ background: ORANGE }}>Change profile picture</button>
-          </div>
-        </div>
-      )}
     </>
   );
 }
