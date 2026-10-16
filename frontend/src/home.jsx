@@ -8,8 +8,8 @@ import minedic from './assets/minedic.jpg';
 import asyv from './assets/asyv.webp';
 import ceo from './assets/ceo.jpg';
 import mukunzi from './assets/muk.png';
-import minister from './assets/minister.jpg';
-import milker from './assets/milker.jpg';
+import minister from './assets/pup.jpg';
+import milker from './assets/pupe.jpg';
 import {
   BookOpen, ClipboardCheck, GraduationCap, CalendarCheck, FileText, Wallet,
   ShieldCheck, School, LayoutDashboard, Smartphone, Landmark, Mail, Clock3,
