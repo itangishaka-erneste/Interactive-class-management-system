@@ -1350,7 +1350,7 @@ export default function Home() {
                 Built for Rwandan schools
               </span>
               <h1 className="ecw-heading text-[2.6rem] sm:text-6xl font-extrabold leading-[1.02] text-neutral-900 mb-5">
-                Classwork, marks and <span className="ecw-typing-highlight" aria-label="progress.">{Array.from("progress.").map((letter, index) => <span key={index} aria-hidden="true" style={{ "--letter-index": index }}>{letter}</span>)}</span> <span className="ecw-highlight">Sorted</span> in one place.
+                Classwork, marks and <span className="ecw-typing-highlight" aria-label="progress."><span style={{ color: "#FF4500" }}>progress</span><span aria-hidden="true" className="ecw-typing-caret" /></span> <span className="ecw-highlight">Sorted</span> in one place.
               </h1>
               <p className="ecw-body text-[15px] text-neutral-600 leading-relaxed max-w-md mb-8">
                 Easy ClassWork Records gives every school one system for teachers, students and administrators,
