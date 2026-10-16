@@ -1150,7 +1150,7 @@ function AiShell({ open, setOpen, title, subtitle, children }) {
     <div style={{ background: t.blueSoft, border: `1px solid ${t.blue}22`, borderRadius: 10, padding: 14 }}>
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
         style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}>
-        <span style={{ width: 30, height: 30, borderRadius: 8, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Sparkles size={15} color={t.blue} /></span>
+        <span style={{ width: 30, height: 30, borderRadius: 8, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}><img src={logo} alt="ESMS" style={{ width: 24, height: 24, objectFit: 'contain' }} /></span>
         <span style={{ flex: 1 }}>
           <span className="td-heading" style={{ display: 'block', fontSize: 13, fontWeight: 700, color: t.text }}>{title}</span>
           <span style={{ display: 'block', fontSize: 11.5, color: t.subtext, marginTop: 1 }}>{subtitle}</span>
