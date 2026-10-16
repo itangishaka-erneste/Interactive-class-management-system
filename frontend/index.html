@@ -17,8 +17,8 @@
             .filter(Boolean)
             .pop();
           document.title = page
-            ? `${page.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())} | Class Records`
-            : "Class Records";
+            ? `${page.replace(/[-_]/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase())} | ESMS`
+            : "ESMS";
         };
 
         ["pushState", "replaceState"].forEach((method) => {
