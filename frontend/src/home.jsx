@@ -1303,6 +1303,9 @@ export default function Home() {
           .ecw-hero-bg::before { content:""; position:absolute; inset:0; background-image:radial-gradient(#16206f14 1px, transparent 1px); background-size:22px 22px; mask-image:linear-gradient(to bottom,black,transparent 85%); -webkit-mask-image:linear-gradient(to bottom,black,transparent 85%); pointer-events:none; }
 
           .ecw-highlight { background:linear-gradient(transparent 62%, rgba(255,69,0,.28) 62%); }
+          .ecw-typing-highlight { display:inline-block; font-size:.78em; color:#136040; background:#EAF6EF; border-radius:.18em; padding:0 .12em; }
+          .ecw-typing-highlight span { display:inline-block; opacity:0; animation:ecw-type-letter .08s steps(1,end) forwards; animation-delay:calc(var(--letter-index) * .09s); }
+          @keyframes ecw-type-letter { to { opacity:1; } }
 
           .ecw-browser { position:relative; border-radius:22px; overflow:hidden; background:#fff; border:1px solid #E5E7EB; box-shadow:0 30px 70px -24px rgba(22,32,111,.45); }
           .ecw-browser-bar { display:flex; align-items:center; gap:8px; padding:.65rem .9rem; background:#F6F7FB; border-bottom:1px solid #ECEEF5; }
@@ -1347,7 +1350,7 @@ export default function Home() {
                 Built for Rwandan schools
               </span>
               <h1 className="ecw-heading text-[2.6rem] sm:text-6xl font-extrabold leading-[1.02] text-neutral-900 mb-5">
-                Classwork, marks and <span className="ecw-highlight ecw-typing-highlight">progress.</span> <span className="ecw-highlight">Sorted</span> in one place.
+                Classwork, marks and <span className="ecw-typing-highlight" aria-label="progress.">{Array.from("progress.").map((letter, index) => <span key={index} aria-hidden="true" style={{ "--letter-index": index }}>{letter}</span>)}</span> <span className="ecw-highlight">Sorted</span> in one place.
               </h1>
               <p className="ecw-body text-[15px] text-neutral-600 leading-relaxed max-w-md mb-8">
                 Easy ClassWork Records gives every school one system for teachers, students and administrators,
