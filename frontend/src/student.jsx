@@ -582,12 +582,17 @@ function NoteViewerModal({ note, onClose }) {
           </span>
           <div className="flex-1 min-w-0">
             <h3 className="font-extrabold text-[15px] truncate" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{note.title}</h3>
-            <p className="text-[11px] text-gray-400">{note.subject} · {note.authorName} · {fmtDateTime(note.updatedAt)}</p>
+            <p className="text-[11px] text-gray-400">{note.subject}{note.unitTitle ? ` · ${note.unitTitle}` : ''}{note.subunitTitle ? ` · ${note.subunitTitle}` : ''} · {note.authorName} · {fmtDateTime(note.updatedAt)}</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
         </div>
         <div className="px-5 py-5">
           <p className="text-[13px] text-gray-700 leading-relaxed whitespace-pre-line">{note.content}</p>
+          {note.fileUrl && (
+            <a href={note.fileUrl} target="_blank" rel="noreferrer" className="mt-4 flex items-center gap-2 rounded-lg border border-blue-100 bg-blue-50 p-3 text-xs font-bold text-blue-700">
+              <FileText size={15} /> Open {note.fileName || (note.fileType === "google-doc" ? "Google document" : "attached study material")}
+            </a>
+          )}
         </div>
       </div>
     </div>
@@ -645,7 +650,7 @@ function QuizRow({ quiz, onStart, onViewResult }) {
         </div>
         {quiz.status === "completed" && quiz.attempt && (
           <p className="text-[11px] mt-1 font-bold" style={{ color: GREEN }}>
-            Score: {quiz.attempt.finalScore}/{quiz.questionCount} ({quiz.attempt.scorePercent}%)
+            {quiz.attempt.scorePercent === null ? "Awaiting teacher review" : `Score: ${quiz.attempt.finalScore}/${quiz.totalMarks} (${quiz.attempt.scorePercent}%)`}
           </p>
         )}
       </div>
@@ -671,6 +676,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
   const [quiz, setQuiz] = useState(null);
   const [attempt, setAttempt] = useState(null);
   const [answers, setAnswers] = useState({});
+  const [writtenAnswers, setWrittenAnswers] = useState({});
   const [currentIndex, setCurrentIndex] = useState(0);
   const [confirmingSubmit, setConfirmingSubmit] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -686,8 +692,13 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
         setQuiz(res.quiz);
         setAttempt(res.attempt);
         const initialAnswers = {};
-        for (const a of res.answers) initialAnswers[a.questionId] = a.optionId;
+        const initialWrittenAnswers = {};
+        for (const a of res.answers) {
+          if (a.optionId) initialAnswers[a.questionId] = a.optionId;
+          if (a.answerText) initialWrittenAnswers[a.questionId] = a.answerText;
+        }
         setAnswers(initialAnswers);
+        setWrittenAnswers(initialWrittenAnswers);
       } catch (err) {
         toast(err.message, "error");
         onClose();
@@ -701,9 +712,28 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
   const deadlineMs = attempt?.deadlineAt ? new Date(attempt.deadlineAt).getTime() : null;
   const remainingMs = deadlineMs ? deadlineMs - now : null;
 
+  useEffect(() => {
+    if (loading || submitting || result || !Object.keys(writtenAnswers).length) return undefined;
+    const timer = window.setTimeout(() => {
+      Promise.all(Object.entries(writtenAnswers).map(([questionId, answerText]) =>
+        apiFetch(`/api/student/quizzes/${quizId}/answer`, {
+          method: "POST",
+          body: JSON.stringify({ questionId: Number(questionId), answerText }),
+        })
+      )).catch((err) => toast(err.message, "error"));
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [writtenAnswers, loading, submitting, result, quizId, toast]);
+
   const submit = useCallback(async () => {
     setSubmitting(true);
     try {
+      for (const [questionId, answerText] of Object.entries(writtenAnswers)) {
+        await apiFetch(`/api/student/quizzes/${quizId}/answer`, {
+          method: "POST",
+          body: JSON.stringify({ questionId: Number(questionId), answerText }),
+        });
+      }
       const res = await apiFetch(`/api/student/quizzes/${quizId}/submit`, { method: "POST" });
       setResult(res.result);
       onFinished();
@@ -713,7 +743,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
       setSubmitting(false);
       setConfirmingSubmit(false);
     }
-  }, [quizId, onFinished, toast]);
+  }, [quizId, writtenAnswers, onFinished, toast]);
 
   useEffect(() => {
     if (!loading && !result && remainingMs !== null && remainingMs <= 0) {
@@ -770,8 +800,12 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
     }
   }
 
+  function writeAnswer(questionId, answerText) {
+    setWrittenAnswers((current) => ({ ...current, [questionId]: answerText }));
+  }
+
   function handleSubmitClick() {
-    const skipped = quiz.questions.filter((q) => !answers[q.id]);
+    const skipped = quiz.questions.filter((q) => q.type === "written" ? !writtenAnswers[q.id]?.trim() : !answers[q.id]);
     if (skipped.length > 0) setConfirmingSubmit(true);
     else submit();
   }
@@ -792,7 +826,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
   // be answered. This dialog is that missing piece: confirm and submit for
   // real, or go back and finish answering.
   if (confirmingSubmit) {
-    const skippedCount = quiz.questions.filter((q) => !answers[q.id]).length;
+    const skippedCount = quiz.questions.filter((q) => q.type === "written" ? !writtenAnswers[q.id]?.trim() : !answers[q.id]).length;
     return (
       <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 px-4 py-6" role="dialog" aria-modal="true">
         <div className="bg-white w-full max-w-sm rounded-2xl shadow-2xl px-6 py-7 text-center">
@@ -839,9 +873,11 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
           </span>
           <h2 className="font-extrabold text-xl mb-2" style={{ fontFamily: "'Poppins', sans-serif", color: GREEN }}>Congratulations!</h2>
           <p className="text-sm text-gray-600 mb-3">You finished the quiz. Great work!</p>
-          <h3 className="font-extrabold text-lg mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: ORANGE }}>{result.scorePercent}%</h3>
+          <h3 className="font-extrabold text-lg mb-1" style={{ fontFamily: "'Poppins', sans-serif", color: ORANGE }}>
+            {result.pendingGrading ? "Awaiting teacher review" : `${result.scorePercent}%`}
+          </h3>
           <p className="text-xs text-gray-500 mb-1">
-            {result.rawScore} of {result.totalQuestions} correct on "{quiz.title}".
+            {result.pendingGrading ? `Your written responses for "${quiz.title}" will be marked by your teacher.` : `${result.rawScore} marks on "${quiz.title}".`}
           </p>
           <button type="button" onClick={onClose} className="w-full py-2.5 text-white font-bold text-xs rounded-lg hover:opacity-90 transition-opacity mt-3" style={{ background: ORANGE }}>
             Close Review
@@ -852,7 +888,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
   }
 
   const question = quiz.questions[currentIndex];
-  const answeredCount = quiz.questions.filter((q) => answers[q.id]).length;
+  const answeredCount = quiz.questions.filter((q) => q.type === "written" ? !!writtenAnswers[q.id]?.trim() : !!answers[q.id]).length;
   const timeRunningLow = remainingMs !== null && remainingMs < 60000;
 
   return (
@@ -883,7 +919,11 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
             Q{currentIndex + 1}. {question.question}{" "}
             <span className="font-normal text-gray-400 text-[11px]">({question.marks ?? 1} mark{(question.marks ?? 1) === 1 ? "" : "s"})</span>
           </p>
-          <div className="flex flex-col gap-2">
+          {question.type === "written" ? (
+            <textarea value={writtenAnswers[question.id] || ""} onChange={(e) => writeAnswer(question.id, e.target.value)}
+              rows={8} maxLength={10000} placeholder="Write your answer here…"
+              className="w-full rounded-lg border border-gray-200 p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-200" />
+          ) : <div className="flex flex-col gap-2">
             {question.options.map((o) => {
               const selected = answers[question.id] === o.id;
               return (
@@ -901,7 +941,7 @@ function QuizTakerModal({ quizId, onClose, onFinished, toast }) {
                 </button>
               );
             })}
-          </div>
+          </div>}
         </div>
 
         <div className="flex items-center justify-between px-5 py-4 border-t border-gray-100">
@@ -991,7 +1031,7 @@ function QuizReviewModal({ quizId, onClose, toast }) {
           <div className="flex-1 min-w-0">
             <h3 className="font-extrabold text-[15px] truncate" style={{ fontFamily: "'Poppins', sans-serif", color: BLUE }}>{quiz.title}</h3>
             <p className="text-[11px] text-gray-400">
-              {result.finalScore}/{result.total} marks ({result.scorePercent}%)
+              {result.scorePercent === null ? "Awaiting written-response marks" : `${result.finalScore}/${result.total} marks (${result.scorePercent}%)`}
               {result.penaltyMarks > 0 ? ` · ${result.penaltyMarks} mark${result.penaltyMarks === 1 ? "" : "s"} deducted for leaving the tab` : ""}
             </p>
           </div>
@@ -1003,11 +1043,19 @@ function QuizReviewModal({ quizId, onClose, toast }) {
             const correctOption = q.options.find((o) => o.isCorrect);
             const gotItRight = q.selectedOptionId && correctOption && q.selectedOptionId === correctOption.id;
             return (
-              <div key={q.id} className="rounded-lg border p-3.5" style={{ borderColor: gotItRight ? GREEN : (q.selectedOptionId ? RED : "#E5E7EB") }}>
+              <div key={q.id} className="rounded-lg border p-3.5" style={{ borderColor: q.type === "written" ? "#E5E7EB" : gotItRight ? GREEN : (q.selectedOptionId ? RED : "#E5E7EB") }}>
                 <p className="font-semibold text-[13px] text-gray-900 mb-2">
                   Q{i + 1}. {q.question} <span className="font-normal text-gray-400 text-[11px]">({q.marks ?? 1} mark{(q.marks ?? 1) === 1 ? "" : "s"})</span>
                 </p>
-                <div className="flex flex-col gap-1.5">
+                {q.type === "written" ? (
+                  <div className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-xs text-gray-700 whitespace-pre-wrap">
+                    {q.answerText || "No written response provided."}
+                    <p className="mt-2 border-t border-gray-200 pt-2 text-[11px] font-bold text-gray-500">
+                      {q.marksAwarded === null ? "Awaiting teacher review" : `Mark: ${q.marksAwarded}/${q.marks}`}
+                    </p>
+                    {q.feedback && <p className="mt-1 text-[11px] text-gray-600">{q.feedback}</p>}
+                  </div>
+                ) : <div className="flex flex-col gap-1.5">
                   {q.options.map((o) => {
                     const isSelected = q.selectedOptionId === o.id;
                     const isCorrect = o.isCorrect;
@@ -1022,8 +1070,8 @@ function QuizReviewModal({ quizId, onClose, toast }) {
                       </div>
                     );
                   })}
-                </div>
-                {!q.selectedOptionId && <p className="text-[11px] mt-2 font-semibold" style={{ color: ORANGE }}>You did not answer this question.</p>}
+                </div>}
+                {q.type !== "written" && !q.selectedOptionId && <p className="text-[11px] mt-2 font-semibold" style={{ color: ORANGE }}>You did not answer this question.</p>}
               </div>
             );
           })}
@@ -1321,8 +1369,9 @@ export default function Student({ onSignOut }) {
   const pendingQuizzes = quizzes.filter((q) => q.status === "available" || q.status === "in_progress" || q.status === "upcoming");
   const doneQuizzes = quizzes.filter((q) => q.status === "completed");
   useEffect(() => { setResultsVisible(SHOW_MORE_STEP); }, [doneQuizzes.length]);
-  const averageScore = doneQuizzes.length
-    ? Math.round(doneQuizzes.reduce((sum, q) => sum + (q.attempt?.scorePercent || 0), 0) / doneQuizzes.length) + "%"
+  const gradedQuizzes = doneQuizzes.filter((q) => q.attempt?.scorePercent !== null);
+  const averageScore = gradedQuizzes.length
+    ? Math.round(gradedQuizzes.reduce((sum, q) => sum + q.attempt.scorePercent, 0) / gradedQuizzes.length) + "%"
     : "—";
 
   const stats = [
@@ -1331,6 +1380,19 @@ export default function Student({ onSignOut }) {
     { label: t.quizzesDone, value: doneQuizzes.length, icon: CheckCircle2, tint: GREEN_SOFT, ink: GREEN, key: "results" },
     { label: t.averageScore, value: averageScore, icon: LineChart, tint: BLUE_SOFT, ink: BLUE, key: "progress" },
   ];
+  const visibleNotes = notes.slice(0, notesVisible);
+  const notesBySubject = new Map();
+  for (const note of visibleNotes) {
+    const subject = note.subject || "General";
+    if (!notesBySubject.has(subject)) notesBySubject.set(subject, new Map());
+    const units = notesBySubject.get(subject);
+    const unitTitle = note.unitTitle || "General";
+    if (!units.has(unitTitle)) units.set(unitTitle, new Map());
+    const subunits = units.get(unitTitle);
+    const subunitTitle = note.subunitTitle || "";
+    if (!subunits.has(subunitTitle)) subunits.set(subunitTitle, []);
+    subunits.get(subunitTitle).push(note);
+  }
 
   return (
     <div className="min-h-screen bg-white flex text-gray-900">
@@ -1495,16 +1557,36 @@ export default function Student({ onSignOut }) {
                 <EmptyState icon={BookOpen} title="No Study Notes" sub="When teachers publish notes, they will appear right here." tint={BLUE_SOFT} ink={BLUE} />
               ) : (
                 <>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    {notes.slice(0, notesVisible).map((note) => (
-                      <div key={note.id} onClick={() => setOpenNote(note)} className="bg-gray-50 border border-gray-100 hover:border-gray-300 transition-colors p-3 rounded-md cursor-pointer">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded" style={{ background: GREEN_SOFT, color: GREEN }}>{note.subject || "General"}</span>
-                          <span className="text-[10px] text-gray-400">{fmtDateTime(note.updatedAt)}</span>
+                  <div className="flex flex-col gap-3">
+                    {[...notesBySubject].map(([subject, units]) => (
+                      <details key={subject} open className="rounded-lg border border-gray-100 bg-white p-3">
+                        <summary className="cursor-pointer text-sm font-extrabold" style={{ color: BLUE }}>{subject}</summary>
+                        <div className="mt-3 flex flex-col gap-2">
+                          {[...units].map(([unitTitle, subunits]) => (
+                            <details key={unitTitle} open className="rounded-md bg-gray-50 p-3">
+                              <summary className="cursor-pointer text-xs font-bold text-gray-800">{unitTitle}</summary>
+                              {[...subunits].map(([subunitTitle, items]) => (
+                                <div key={subunitTitle || "unit-notes"} className="mt-2">
+                                  {subunitTitle && <p className="mb-2 text-[11px] font-bold text-gray-500">{subunitTitle}</p>}
+                                  <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                    {items.map((note) => (
+                                      <button key={note.id} type="button" onClick={() => setOpenNote(note)} className="rounded-md border border-gray-100 bg-white p-3 text-left transition-colors hover:border-gray-300">
+                                        <div className="mb-2 flex items-center gap-2">
+                                          <span className="rounded px-2 py-0.5 text-[10px] font-bold" style={{ background: GREEN_SOFT, color: GREEN }}>{note.subunitTitle || unitTitle}</span>
+                                          <span className="text-[10px] text-gray-400">{fmtDateTime(note.updatedAt)}</span>
+                                        </div>
+                                        <h3 className="mb-1 text-sm font-bold text-gray-900">{note.title}</h3>
+                                        <p className="line-clamp-2 text-xs text-gray-500">{note.content}</p>
+                                        {note.fileUrl && <span className="mt-2 inline-flex items-center gap-1 text-[10px] font-bold text-blue-700"><FileText size={12} /> {note.fileName || "Study material"}</span>}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </details>
+                          ))}
                         </div>
-                        <h3 className="font-bold text-sm text-gray-900 mb-1">{note.title}</h3>
-                        <p className="text-xs text-gray-500 line-clamp-2">{note.content}</p>
-                      </div>
+                      </details>
                     ))}
                   </div>
                   <ShowMoreButton remaining={notes.length - notesVisible} onClick={() => setNotesVisible((n) => n + SHOW_MORE_STEP)} />
@@ -1549,8 +1631,8 @@ export default function Student({ onSignOut }) {
                         </div>
                         <div className="flex items-center gap-3 shrink-0">
                           <div className="text-right">
-                            <span className="font-extrabold text-sm" style={{ color: GREEN }}>{q.attempt?.scorePercent}%</span>
-                            <p className="text-[11px] text-gray-500">{q.attempt?.finalScore} / {q.questionCount}</p>
+                            <span className="font-extrabold text-sm" style={{ color: GREEN }}>{q.attempt?.scorePercent === null ? "Awaiting review" : `${q.attempt?.scorePercent}%`}</span>
+                            <p className="text-[11px] text-gray-500">{q.attempt?.scorePercent === null ? "Written answers are being marked" : `${q.attempt?.finalScore} / ${q.totalMarks} marks`}</p>
                           </div>
                           <button type="button" onClick={() => setReviewingQuizId(q.id)} className="rounded-lg font-bold text-[11px] px-3 py-2 border" style={{ borderColor: BLUE, color: BLUE }}>
                             Review

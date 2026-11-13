@@ -207,7 +207,8 @@ function saveRenewedToken(response) {
 // retry action when the request times out.
 async function api(path, { method = 'GET', body, timeoutMs = 25000, _retried = false } = {}) {
   const session = getSession();
-  const headers = { 'Content-Type': 'application/json' };
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  const headers = isFormData ? {} : { 'Content-Type': 'application/json' };
   if (session && session.token) headers.Authorization = `Bearer ${session.token}`;
 
   const controller = new AbortController();
@@ -217,7 +218,7 @@ async function api(path, { method = 'GET', body, timeoutMs = 25000, _retried = f
     response = await fetch(`${API_BASE}/api/teacher${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isFormData ? body : JSON.stringify(body),
       signal: controller.signal,
     });
   } catch (err) {
@@ -1082,7 +1083,7 @@ function NotePreviewModal({ note, onClose }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12, gap: 10 }}>
           <div>
             <h2 className="td-heading" style={{ margin: 0, fontSize: 18, color: t.text }}>{note.title || 'Untitled note'}</h2>
-            <p style={{ margin: '5px 0 0', fontSize: 11.5, color: t.subtext }}>{note.className} · {note.subject} · updated {fmtDate(note.updatedAt)}</p>
+            <p style={{ margin: '5px 0 0', fontSize: 11.5, color: t.subtext }}>{note.className} · {note.subject}{note.unitTitle ? ` · ${note.unitTitle}` : ''}{note.subunitTitle ? ` · ${note.subunitTitle}` : ''} · updated {fmtDate(note.updatedAt)}</p>
           </div>
           <IconBtn icon={X} onClick={onClose} title="Close" />
         </div>
@@ -1107,6 +1108,18 @@ function NotesDashboard({ notes, filter, setFilter, onView, onEdit, onTogglePubl
     published: notes.filter((n) => n.status === 'published').length,
     draft: notes.filter((n) => n.status === 'draft').length,
   };
+  const grouped = new Map();
+  for (const note of filtered) {
+    const key = `${note.className}::${note.subject}`;
+    if (!grouped.has(key)) grouped.set(key, { className: note.className, subject: note.subject, units: new Map() });
+    const subject = grouped.get(key);
+    const unitTitle = note.unitTitle || 'General';
+    if (!subject.units.has(unitTitle)) subject.units.set(unitTitle, new Map());
+    const subunits = subject.units.get(unitTitle);
+    const subunitTitle = note.subunitTitle || '';
+    if (!subunits.has(subunitTitle)) subunits.set(subunitTitle, []);
+    subunits.get(subunitTitle).push(note);
+  }
   return (
     <div className="td-page-pad" style={{ padding: 22, display: 'flex', flexDirection: 'column', gap: 18 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
@@ -1133,8 +1146,27 @@ function NotesDashboard({ notes, filter, setFilter, onView, onEdit, onTogglePubl
           action={notes.length === 0 && <div style={{ marginTop: 12 }}><PrimaryButton icon={Plus} onClick={onNewNote}>Create your first note</PrimaryButton></div>} />
       ) : (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 14 }}>
-            {filtered.slice(0, visibleCount).map((n) => <NoteCard key={n.id} note={n} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} busyAction={busyAction} />)}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {[...grouped.values()].map((subject) => (
+              <details key={`${subject.className}-${subject.subject}`} open style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 12 }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 800, color: t.blue, fontSize: 13 }}>{subject.className} · {subject.subject}</summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                  {[...subject.units].map(([unitTitle, subunits]) => (
+                    <details key={unitTitle} open style={{ background: t.panel, borderRadius: 8, padding: 10 }}>
+                      <summary style={{ cursor: 'pointer', fontWeight: 700, color: t.text, fontSize: 12.5 }}>{unitTitle}</summary>
+                      {[...subunits].map(([subunitTitle, unitNotes]) => (
+                        <div key={subunitTitle || 'unit-notes'} style={{ marginTop: 9 }}>
+                          {subunitTitle && <p style={{ margin: '0 0 8px', color: t.subtext, fontSize: 11.5, fontWeight: 700 }}>{subunitTitle}</p>}
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px,1fr))', gap: 10 }}>
+                            {unitNotes.slice(0, visibleCount).map((n) => <NoteCard key={n.id} note={n} onView={onView} onEdit={onEdit} onTogglePublish={onTogglePublish} onDelete={onDelete} busyAction={busyAction} />)}
+                          </div>
+                        </div>
+                      ))}
+                    </details>
+                  ))}
+                </div>
+              </details>
+            ))}
           </div>
           <ShowMoreButton remaining={filtered.length - visibleCount} onClick={() => setVisibleCount((n) => n + SHOW_MORE_STEP)} />
         </>
@@ -1231,12 +1263,15 @@ function AiNotePanel({ assignment, request, hasContent, onUse }) {
 function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuardRef, toast, goSettings }) {
   const isPublished = initial.status === 'published';
   const [title, setTitle] = useState(initial.title || '');
+  const [unitTitle, setUnitTitle] = useState(initial.unitTitle || '');
+  const [subunitTitle, setSubunitTitle] = useState(initial.subunitTitle || '');
   const [content, setContent] = useState(initial.content || '');
   const [fileUrl, setFileUrl] = useState(initial.fileUrl || '');
   const [fileType, setFileType] = useState(initial.fileType || '');
   const [fileName, setFileName] = useState(initial.fileName || '');
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadError, setUploadError] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [assignment, setAssignment] = useState(() => {
     if (initial.classId) return { classId: initial.classId, subject: initial.subject, className: initial.className };
     return assignments.length === 1 ? assignments[0] : null;
@@ -1249,6 +1284,8 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
     classId: assignment.classId,
     subject: assignment.subject,
     title: title.trim(),
+    unitTitle: unitTitle.trim(),
+    subunitTitle: subunitTitle.trim(),
     content: content.trim(),
     status,
     fileUrl: fileUrl.trim(),
@@ -1268,8 +1305,8 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
   const autosave = useAutosave({
     enabled: !isPublished && !busy,
-    snapshot: { a: assignmentKey(assignment), title, content, fileUrl, fileType, fileName },
-    ready: !!assignment && !!(title.trim() || content.trim()),
+    snapshot: { a: assignmentKey(assignment), title, unitTitle, subunitTitle, content, fileUrl, fileType, fileName },
+    ready: !!assignment && !!(title.trim() || content.trim() || fileUrl.trim()),
     persist: () => send('draft'),
   });
 
@@ -1294,10 +1331,29 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
   const back = async () => { if (busy) return; if (await leave()) onClose(); };
 
+  const uploadMaterial = async () => {
+    if (!uploadFile) return;
+    setUploadError('');
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.append('file', uploadFile);
+      const res = await request('/notes/upload', { method: 'POST', body });
+      setFileUrl(`${API_BASE}${res.fileUrl}`);
+      setFileName(res.fileName);
+      setFileType(res.fileType);
+      setUploadFile(null);
+    } catch (e) {
+      setUploadError(e.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const save = async (status) => {
     if (!assignment) { setError('Pick a class and subject first.'); return; }
-    if (status === 'published' && (!title.trim() || !content.trim())) { setError('A note needs both a title and content before it can be published.'); return; }
-    if (!title.trim() && !content.trim()) { setError('Write a title or some content before saving.'); return; }
+    if (status === 'published' && (!title.trim() || (!content.trim() && !fileUrl.trim()))) { setError('A published study item needs a title and either content or an attached file.'); return; }
+    if (!title.trim() && !content.trim() && !fileUrl.trim()) { setError('Add a title, some content, or an attached file before saving.'); return; }
     setError('');
     setBusy(status);
     autosave.pause();
@@ -1333,6 +1389,14 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
         </div>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Note title" aria-label="Note title" maxLength={200}
           style={{ ...inputStyle, padding: '11px 13px', fontSize: 15, fontWeight: 700 }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 10 }}>
+          <Field label="Unit (e.g. Unit 1: Peace)">
+            <input value={unitTitle} onChange={(e) => setUnitTitle(e.target.value)} placeholder="Unit 1: ..." maxLength={200} style={inputStyle} />
+          </Field>
+          <Field label="Sub-unit (optional, e.g. 1.1)">
+            <input value={subunitTitle} onChange={(e) => setSubunitTitle(e.target.value)} placeholder="Unit 1.1: ..." maxLength={200} style={inputStyle} />
+          </Field>
+        </div>
         <textarea value={content} onChange={(e) => setContent(e.target.value)} placeholder="Write the note content…" aria-label="Note content" rows={10}
           style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }} />
       </div>
@@ -1342,33 +1406,21 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18 }}>
         <p className="td-heading" style={{ margin: '0 0 6px', fontSize: 12.5, fontWeight: 700, color: t.text }}>Attach a file (optional)</p>
-        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Upload a PDF or other file, or paste a link to a file hosted online.</p>
+        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Upload a PDF or book, or paste a public/shareable Google Drive, Docs, or other file link.</p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <input type="file" aria-label="Choose a file to attach" onChange={(e) => { setUploadFile(e.target.files?.[0] || null); setUploadError(''); }} />
-          <PrimaryButton variant="blue" disabled={!uploadFile || !!busy} onClick={() => {
-            if (!uploadFile) return;
-            if (uploadFile.size > 10 * 1024 * 1024) { setUploadError('File must be 10 MB or smaller.'); return; }
-            const reader = new FileReader();
-            reader.onload = () => {
-              setFileUrl(String(reader.result));
-              setFileName(uploadFile.name);
-              setFileType(uploadFile.type.startsWith('image/') ? 'image' : uploadFile.type === 'application/pdf' ? 'pdf' : uploadFile.type.startsWith('video/') ? 'video' : 'file');
-              setUploadError('');
-              setUploadFile(null);
-            };
-            reader.onerror = () => setUploadError('Could not read this file. Please try again.');
-            reader.readAsDataURL(uploadFile);
-          }}>Add file</PrimaryButton>
+          <PrimaryButton variant="blue" disabled={!uploadFile || !!busy || uploading} busy={uploading} onClick={uploadMaterial}>Upload study material</PrimaryButton>
           {uploadFile && <span style={{ fontSize: 12, color: t.subtext }}>{uploadFile.name}</span>}
         </div>
         {uploadError && <p role="alert" style={{ margin: '0 0 8px', color: t.red, fontSize: 12 }}>{uploadError}</p>}
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 2fr) minmax(0, 1fr)', gap: 8 }}>
-          <input value={fileUrl} onChange={(e) => setFileUrl(e.target.value)} placeholder="https://…" aria-label="File link" style={inputStyle} />
+          <input value={fileUrl} onChange={(e) => setFileUrl(e.target.value)} placeholder="Drive, Docs, or file URL (https://…)" aria-label="File link" style={inputStyle} />
           <select value={fileType} onChange={(e) => setFileType(e.target.value)} aria-label="File type" style={inputStyle}>
             <option value="">File type…</option>
             <option value="image">Image</option>
             <option value="video">Video</option>
             <option value="pdf">PDF</option>
+            <option value="google-doc">Google Drive / Docs link</option>
             <option value="file">Other file</option>
           </select>
         </div>
@@ -1532,6 +1584,12 @@ function QuizzesDashboard({ quizzes, filter, setFilter, onView, onEdit, onToggle
 
 function QuestionEditor({ q, index, onChange, onRemove }) {
   const setField = (patch) => onChange({ ...q, ...patch });
+  const setType = (type) => setField({
+    type,
+    options: type === 'choice' && q.options.length < 2
+      ? [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }]
+      : q.options,
+  });
   const addOption = () => { if (q.options.length < 6) setField({ options: [...q.options, { id: uid(), optionText: '', isCorrect: false }] }); };
   const updateOption = (id, patch) => setField({ options: q.options.map((o) => (o.id === id ? { ...o, ...patch } : o)) });
   const removeOption = (id) => setField({ options: q.options.filter((o) => o.id !== id) });
@@ -1558,7 +1616,26 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
       </div>
       <textarea value={q.question} onChange={(e) => setField({ question: e.target.value })} rows={2} placeholder="Write the question…" aria-label={`Question ${index + 1}`}
         style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
-      <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
+      <Field label="Question type">
+        <select value={q.type || 'choice'} onChange={(e) => setType(e.target.value)} style={{ ...inputStyle, background: '#fff' }}>
+          <option value="choice">Multiple choice (auto-marked)</option>
+          <option value="written">Written response</option>
+        </select>
+      </Field>
+      {q.type === 'written' ? (
+        <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <textarea value={q.rubric || ''} onChange={(e) => setField({ rubric: e.target.value })} rows={4} maxLength={3000}
+            placeholder="Marking rubric: key ideas, expected reasoning, and partial-credit criteria…" aria-label={`Marking rubric for question ${index + 1}`}
+            style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
+          <Field label="Mark this answer">
+            <select value={q.gradingMode || 'manual'} onChange={(e) => setField({ gradingMode: e.target.value })} style={{ ...inputStyle, background: '#fff' }}>
+              <option value="manual">Teacher marks manually</option>
+              <option value="ai">AI rubric suggestion (teacher reviews)</option>
+            </select>
+          </Field>
+          <p style={{ margin: 0, color: t.subtext, fontSize: 11 }}>AI suggests a mark using this rubric. The teacher reviews and saves the final mark.</p>
+        </div>
+      ) : <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {q.options.map((o, oi) => (
           <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
             <button type="button" onClick={() => markCorrect(o.id)} title="Mark as the correct answer" aria-label={`Mark option ${oi + 1} as correct`} aria-pressed={o.isCorrect}
@@ -1573,7 +1650,7 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
         {q.options.length < 6 && (
           <button type="button" onClick={addOption} className="td-btn" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: t.green, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 0', width: 'fit-content' }}><PlusCircle size={13} /> Add option</button>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1583,10 +1660,14 @@ function firstQuizProblem(questions) {
   if (questions.length === 0) return 'Add at least one question before publishing.';
   for (let i = 0; i < questions.length; i++) {
     const q = questions[i];
-    const options = q.options.filter((o) => o.optionText.trim());
     if (!q.question.trim()) return `Question ${i + 1} has no text.`;
-    if (options.length < 2) return `Question ${i + 1} needs at least two options.`;
-    if (options.filter((o) => o.isCorrect).length !== 1) return `Question ${i + 1} needs exactly one correct answer.`;
+    if (q.type === 'written') {
+      if (!q.rubric?.trim()) return `Written question ${i + 1} needs a marking rubric.`;
+    } else {
+      const options = q.options.filter((o) => o.optionText.trim());
+      if (options.length < 2) return `Question ${i + 1} needs at least two options.`;
+      if (options.filter((o) => o.isCorrect).length !== 1) return `Question ${i + 1} needs exactly one correct answer.`;
+    }
     if (!Number.isInteger(q.marks) || q.marks < 1) return `Question ${i + 1} needs a mark value of at least 1.`;
   }
   return '';
@@ -1595,6 +1676,9 @@ function firstQuizProblem(questions) {
 const toEditorQuestion = (q) => ({
   id: uid(),
   question: q.question,
+  type: 'choice',
+  rubric: '',
+  gradingMode: 'manual',
   marks: 1,
   options: q.options.map((o) => ({ id: uid(), optionText: o.optionText, isCorrect: !!o.isCorrect })),
 });
@@ -1786,7 +1870,7 @@ function QuizEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
   const back = async () => { if (busy) return; if (await leave()) onClose(); };
 
-  const addQuestion = () => setQuestions((qs) => (qs.length >= 50 ? qs : [...qs, { id: uid(), question: '', marks: 1, options: [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }] }]));
+  const addQuestion = () => setQuestions((qs) => (qs.length >= 50 ? qs : [...qs, { id: uid(), question: '', type: 'choice', rubric: '', gradingMode: 'manual', marks: 1, options: [{ id: uid(), optionText: '', isCorrect: true }, { id: uid(), optionText: '', isCorrect: false }] }]));
   const updateQuestion = (id, next) => setQuestions((qs) => qs.map((q) => (q.id === id ? next : q)));
   const removeQuestion = (id) => setQuestions((qs) => qs.filter((q) => q.id !== id));
 
@@ -2322,6 +2406,42 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
     () => request(`/quizzes/${target.quizId}/students/${target.studentId}/review`),
     [request, target.quizId, target.studentId]
   );
+  const [gradeDrafts, setGradeDrafts] = useState({});
+  const [gradingQuestion, setGradingQuestion] = useState(null);
+  const [gradeError, setGradeError] = useState('');
+
+  const suggestGrade = async (question) => {
+    setGradingQuestion(question.id);
+    setGradeError('');
+    try {
+      const res = await request(`/quizzes/${target.quizId}/students/${target.studentId}/ai-grade`, {
+        method: 'POST',
+        body: { questionId: question.id },
+      });
+      setGradeDrafts((drafts) => ({ ...drafts, [question.id]: { marksAwarded: res.grade.marksAwarded, feedback: res.grade.feedback } }));
+    } catch (e) {
+      setGradeError(e.message);
+    } finally {
+      setGradingQuestion(null);
+    }
+  };
+
+  const saveGrade = async (question) => {
+    const draft = gradeDrafts[question.id] || { marksAwarded: question.marksAwarded ?? 0, feedback: question.feedback || '' };
+    setGradingQuestion(question.id);
+    setGradeError('');
+    try {
+      await request(`/quizzes/${target.quizId}/students/${target.studentId}/grade`, {
+        method: 'POST',
+        body: { questionId: question.id, marksAwarded: Number(draft.marksAwarded), feedback: draft.feedback },
+      });
+      await reload();
+    } catch (e) {
+      setGradeError(e.message);
+    } finally {
+      setGradingQuestion(null);
+    }
+  };
 
   return (
     <Modal onClose={onClose} width={620}>
@@ -2340,11 +2460,14 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
         {data && (
           <>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-              <Badge bg={t.greenSoft} color={t.green}>{data.result.scorePercent}%</Badge>
-              <Chip tone="neutral">{data.result.finalScore}/{data.result.total} marks</Chip>
+              {data.result.scorePercent === null
+                ? <Chip tone="orange">Awaiting written-response marks</Chip>
+                : <Badge bg={t.greenSoft} color={t.green}>{data.result.scorePercent}%</Badge>}
+              <Chip tone="neutral">{data.result.finalScore ?? '—'}/{data.result.total} marks</Chip>
               {data.result.penaltyMarks > 0 && <Chip tone="orange">-{data.result.penaltyMarks} for leaving the tab</Chip>}
               <Chip tone="blue">Submitted {fmtDateTime(data.result.submittedAt)}</Chip>
             </div>
+            {gradeError && <Notice tone="red">{gradeError}</Notice>}
             <div className="td-scroll" style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
               {data.questions.map((q, i) => {
                 const correctOption = q.options.find((o) => o.isCorrect);
@@ -2354,7 +2477,30 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
                     <p style={{ margin: '0 0 8px', fontSize: 13, fontWeight: 700, color: t.text }}>
                       Q{i + 1}. {q.question} <span style={{ fontWeight: 500, color: t.subtext, fontSize: 11 }}>({q.marks ?? 1} mark{(q.marks ?? 1) === 1 ? '' : 's'})</span>
                     </p>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {q.type === 'written' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        <div style={{ border: `1px solid ${t.border}`, background: '#fff', borderRadius: 7, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap' }}>{q.answerText || 'No written response provided.'}</div>
+                        <p style={{ margin: 0, fontSize: 11, color: t.subtext }}>Rubric: {q.rubric}</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: 8 }}>
+                          <Field label={`Mark / ${q.marks}`}>
+                            <input type="number" min="0" max={q.marks} step="0.5"
+                              value={gradeDrafts[q.id]?.marksAwarded ?? q.marksAwarded ?? ''}
+                              onChange={(e) => setGradeDrafts((drafts) => ({ ...drafts, [q.id]: { marksAwarded: e.target.value, feedback: drafts[q.id]?.feedback ?? q.feedback ?? '' } }))}
+                              style={inputStyle} />
+                          </Field>
+                          <Field label="Feedback">
+                            <input value={gradeDrafts[q.id]?.feedback ?? q.feedback ?? ''}
+                              onChange={(e) => setGradeDrafts((drafts) => ({ ...drafts, [q.id]: { marksAwarded: drafts[q.id]?.marksAwarded ?? q.marksAwarded ?? '', feedback: e.target.value } }))}
+                              style={inputStyle} />
+                          </Field>
+                        </div>
+                        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+                          {q.gradingMode === 'ai' && <PrimaryButton variant="outline" disabled={gradingQuestion === q.id} onClick={() => suggestGrade(q)}>{gradingQuestion === q.id ? 'AI grading…' : 'Suggest mark with AI'}</PrimaryButton>}
+                          <PrimaryButton variant="blue" disabled={gradingQuestion === q.id} onClick={() => saveGrade(q)}>{gradingQuestion === q.id ? 'Saving…' : 'Save mark'}</PrimaryButton>
+                          {q.marksAwarded !== null && <Chip tone="green">Saved: {q.marksAwarded}/{q.marks}</Chip>}
+                        </div>
+                      </div>
+                    ) : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                       {q.options.map((o) => {
                         const isSelected = q.selectedOptionId === o.id;
                         const isCorrect = o.isCorrect;
@@ -2366,7 +2512,7 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
                             <span style={{ flex: 1, fontWeight: 600 }}>{o.optionText}</span>
                             {isCorrect && <CheckCircle2 size={13} />}
                             {isSelected && !isCorrect && <X size={13} />}
-                          </div>
+                          </div>}
                         );
                       })}
                     </div>

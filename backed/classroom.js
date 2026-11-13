@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS ecw_notes (
   teacher_id INTEGER NOT NULL REFERENCES ecw_members(id) ON DELETE CASCADE,
   class_id INTEGER NOT NULL REFERENCES ecw_classes(id) ON DELETE CASCADE,
   subject TEXT NOT NULL,
+  unit_title TEXT NOT NULL DEFAULT '',
+  subunit_title TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   content TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -79,6 +81,8 @@ CREATE TABLE IF NOT EXISTS ecw_notes (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ecw_notes_class_idx ON ecw_notes (class_id, status);
+ALTER TABLE ecw_notes ADD COLUMN IF NOT EXISTS unit_title TEXT NOT NULL DEFAULT '';
+ALTER TABLE ecw_notes ADD COLUMN IF NOT EXISTS subunit_title TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS ecw_quizzes (
   id SERIAL PRIMARY KEY,
@@ -99,13 +103,19 @@ CREATE TABLE IF NOT EXISTS ecw_quiz_questions (
   id SERIAL PRIMARY KEY,
   quiz_id INTEGER NOT NULL REFERENCES ecw_quizzes(id) ON DELETE CASCADE,
   position INTEGER NOT NULL DEFAULT 0,
-  question TEXT NOT NULL
+  question TEXT NOT NULL,
+  question_type TEXT NOT NULL DEFAULT 'choice',
+  rubric TEXT NOT NULL DEFAULT '',
+  grading_mode TEXT NOT NULL DEFAULT 'manual'
 );
 -- FIX (new feature): every question used to be worth exactly 1 mark, with no
 -- way for a teacher (or the AI) to weight harder questions more heavily.
 -- ADD COLUMN IF NOT EXISTS is safe to run every startup, including against a
 -- database that already had this table before this column existed.
 ALTER TABLE ecw_quiz_questions ADD COLUMN IF NOT EXISTS marks INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE ecw_quiz_questions ADD COLUMN IF NOT EXISTS question_type TEXT NOT NULL DEFAULT 'choice';
+ALTER TABLE ecw_quiz_questions ADD COLUMN IF NOT EXISTS rubric TEXT NOT NULL DEFAULT '';
+ALTER TABLE ecw_quiz_questions ADD COLUMN IF NOT EXISTS grading_mode TEXT NOT NULL DEFAULT 'manual';
 
 CREATE TABLE IF NOT EXISTS ecw_quiz_options (
   id SERIAL PRIMARY KEY,
@@ -133,9 +143,16 @@ CREATE TABLE IF NOT EXISTS ecw_quiz_attempts (
 CREATE TABLE IF NOT EXISTS ecw_quiz_answers (
   attempt_id INTEGER NOT NULL REFERENCES ecw_quiz_attempts(id) ON DELETE CASCADE,
   question_id INTEGER NOT NULL REFERENCES ecw_quiz_questions(id) ON DELETE CASCADE,
-  option_id INTEGER NOT NULL REFERENCES ecw_quiz_options(id) ON DELETE CASCADE,
+  option_id INTEGER REFERENCES ecw_quiz_options(id) ON DELETE CASCADE,
+  answer_text TEXT NOT NULL DEFAULT '',
+  marks_awarded INTEGER,
+  feedback TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (attempt_id, question_id)
 );
+ALTER TABLE ecw_quiz_answers ALTER COLUMN option_id DROP NOT NULL;
+ALTER TABLE ecw_quiz_answers ADD COLUMN IF NOT EXISTS answer_text TEXT NOT NULL DEFAULT '';
+ALTER TABLE ecw_quiz_answers ADD COLUMN IF NOT EXISTS marks_awarded INTEGER;
+ALTER TABLE ecw_quiz_answers ADD COLUMN IF NOT EXISTS feedback TEXT NOT NULL DEFAULT '';
 
 -- Backs "give this one student another chance" (teacher.js's reopen route /
 -- student.js's /start check). Lives here, once, so teacher.js and student.js

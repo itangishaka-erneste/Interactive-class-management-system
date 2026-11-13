@@ -146,6 +146,8 @@ router.get(
       notes: r.rows.map((n) => ({
         id: n.id,
         subject: n.subject,
+        unitTitle: n.unit_title || "",
+        subunitTitle: n.subunit_title || "",
         title: n.title,
         content: n.content,
         fileUrl: n.file_url || "",
@@ -184,7 +186,9 @@ router.get(
     const m = req.member;
 
     const quizzes = await pool.query(
-      `SELECT z.*, (SELECT COUNT(*) FROM ecw_quiz_questions q WHERE q.quiz_id = z.id)::int AS question_count
+      `SELECT z.*,
+              (SELECT COUNT(*) FROM ecw_quiz_questions q WHERE q.quiz_id = z.id)::int AS question_count,
+              (SELECT COALESCE(SUM(marks), 0) FROM ecw_quiz_questions q WHERE q.quiz_id = z.id)::int AS total_marks
        FROM ecw_quizzes z WHERE z.class_id = $1 AND z.status = 'published' ORDER BY z.created_at DESC`,
       [classId]
     );
@@ -216,6 +220,7 @@ router.get(
           title: z.title,
           subject: z.subject,
           questionCount: z.question_count,
+          totalMarks: z.total_marks,
           timeLimitMinutes: z.time_limit_minutes,
           startsAt: z.starts_at,
           endsAt: z.ends_at,
@@ -256,7 +261,13 @@ async function getQuestionsWithOptions(quizId, revealAnswers) {
   // `SELECT *` already pulls `marks` out of the row (see the migration in
   // classroom.js); it is passed on here so "worth N marks" can be shown
   // while taking or reviewing a quiz, and used to weight scoring below.
-  return qs.rows.map((q) => ({ id: q.id, question: q.question, marks: q.marks, options: byQuestion.get(q.id) || [] }));
+  return qs.rows.map((q) => ({
+    id: q.id,
+    question: q.question,
+    type: q.question_type || "choice",
+    marks: q.marks,
+    options: byQuestion.get(q.id) || [],
+  }));
 }
 
 router.post(
@@ -304,7 +315,7 @@ router.post(
     }
 
     const questions = await getQuestionsWithOptions(quizId, false);
-    const savedAnswers = await pool.query("SELECT question_id, option_id FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
+    const savedAnswers = await pool.query("SELECT question_id, option_id, answer_text FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
 
     // Let the teacher watch, live, as students actually begin the quiz.
     if (isFreshAttempt) {
@@ -319,7 +330,7 @@ router.post(
       success: true,
       quiz: { id: quiz.id, title: quiz.title, questions },
       attempt: { id: attempt.id, deadlineAt: attempt.deadline_at, penaltyMarks: attempt.penalty_marks },
-      answers: savedAnswers.rows.map((a) => ({ questionId: a.question_id, optionId: a.option_id })),
+      answers: savedAnswers.rows.map((a) => ({ questionId: a.question_id, optionId: a.option_id, answerText: a.answer_text })),
     });
   })
 );
@@ -330,7 +341,8 @@ router.post(
     const m = req.member;
     const quizId = parseId(req.params.id, "quiz");
     const questionId = parseId(req.body && req.body.questionId, "question");
-    const optionId = parseId(req.body && req.body.optionId, "option");
+    const optionId = req.body && req.body.optionId ? parseId(req.body.optionId, "option") : null;
+    const answerText = String((req.body && req.body.answerText) || "").trim().slice(0, 10000);
 
     const attemptR = await pool.query("SELECT * FROM ecw_quiz_attempts WHERE quiz_id = $1 AND student_id = $2", [quizId, m.id]);
     if (attemptR.rowCount === 0) throw httpError(400, "Start the quiz before answering.");
@@ -341,16 +353,28 @@ router.post(
     // FIX (live answer preview): pull the actual question/option text (not
     // just their ids) so the realtime event below can tell the teacher what
     // the student just picked, not only that "something" was picked.
-    const q = await pool.query("SELECT id, question FROM ecw_quiz_questions WHERE id = $1 AND quiz_id = $2", [questionId, quizId]);
+    const q = await pool.query("SELECT id, question, question_type FROM ecw_quiz_questions WHERE id = $1 AND quiz_id = $2", [questionId, quizId]);
     if (q.rowCount === 0) throw httpError(400, "That question does not belong to this quiz.");
-    const o = await pool.query("SELECT id, option_text FROM ecw_quiz_options WHERE id = $1 AND question_id = $2", [optionId, questionId]);
-    if (o.rowCount === 0) throw httpError(400, "That option does not belong to this question.");
-
-    await pool.query(
-      `INSERT INTO ecw_quiz_answers (attempt_id, question_id, option_id) VALUES ($1, $2, $3)
-       ON CONFLICT (attempt_id, question_id) DO UPDATE SET option_id = EXCLUDED.option_id`,
-      [attempt.id, questionId, optionId]
-    );
+    let answerLabel = answerText;
+    if (q.rows[0].question_type === "written") {
+      if (optionId) throw httpError(400, "Written-response questions need a text answer.");
+      await pool.query(
+        `INSERT INTO ecw_quiz_answers (attempt_id, question_id, option_id, answer_text)
+         VALUES ($1, $2, NULL, $3)
+         ON CONFLICT (attempt_id, question_id) DO UPDATE SET option_id = NULL, answer_text = EXCLUDED.answer_text, marks_awarded = NULL, feedback = ''`,
+        [attempt.id, questionId, answerText]
+      );
+    } else {
+      if (!optionId) throw httpError(400, "Choose an option for this question.");
+      const o = await pool.query("SELECT id, option_text FROM ecw_quiz_options WHERE id = $1 AND question_id = $2", [optionId, questionId]);
+      if (o.rowCount === 0) throw httpError(400, "That option does not belong to this question.");
+      answerLabel = o.rows[0].option_text;
+      await pool.query(
+        `INSERT INTO ecw_quiz_answers (attempt_id, question_id, option_id, answer_text) VALUES ($1, $2, $3, '')
+         ON CONFLICT (attempt_id, question_id) DO UPDATE SET option_id = EXCLUDED.option_id, answer_text = ''`,
+        [attempt.id, questionId, optionId]
+      );
+    }
 
     // This lets one live row per student update in place ("3/10 answered",
     // plus what they just chose) instead of the teacher only finding out
@@ -371,7 +395,7 @@ router.post(
           // answered and the option text they chose, so the teacher's live
           // activity feed can show it like a "typing..." preview.
           lastQuestion: q.rows[0].question,
-          lastAnswer: o.rows[0].option_text,
+          lastAnswer: answerLabel,
         });
       }
     } catch { /* realtime is best-effort */ }
@@ -454,7 +478,7 @@ router.get(
     if (!attempt.submitted_at) throw httpError(400, "Submit the quiz before reviewing it.");
 
     const questions = await getQuestionsWithOptions(quizId, true);
-    const answers = await pool.query("SELECT question_id, option_id FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
+    const answers = await pool.query("SELECT question_id, option_id, answer_text, marks_awarded, feedback FROM ecw_quiz_answers WHERE attempt_id = $1", [attempt.id]);
     const answerByQuestion = new Map(answers.rows.map((a) => [a.question_id, a.option_id]));
 
     res.json({
@@ -473,6 +497,9 @@ router.get(
         question: q.question,
         marks: q.marks,
         selectedOptionId: answerByQuestion.get(q.id) || null,
+        answerText: answers.rows.find((a) => a.question_id === q.id)?.answer_text || "",
+        marksAwarded: answers.rows.find((a) => a.question_id === q.id)?.marks_awarded ?? null,
+        feedback: answers.rows.find((a) => a.question_id === q.id)?.feedback || "",
         options: q.options,
       })),
     });
@@ -509,8 +536,15 @@ router.post(
       [attempt.id]
     );
     const rawScore = correctR.rows[0].n;
-    const finalScore = Math.max(0, rawScore - attempt.penalty_marks);
-    const scorePercent = total > 0 ? Math.round((finalScore / total) * 100) : 0;
+    const pendingR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM ecw_quiz_questions q
+       JOIN ecw_quiz_answers a ON a.question_id = q.id AND a.attempt_id = $1
+       WHERE q.quiz_id = $2 AND q.question_type = 'written' AND a.answer_text <> '' AND a.marks_awarded IS NULL`,
+      [attempt.id, quizId]
+    );
+    const pendingManual = pendingR.rows[0].n > 0;
+    const finalScore = pendingManual ? null : Math.max(0, rawScore - attempt.penalty_marks);
+    const scorePercent = total > 0 && finalScore !== null ? Math.round((finalScore / total) * 100) : null;
 
     const upd = await pool.query(
       `UPDATE ecw_quiz_attempts SET submitted_at = NOW(), total = $1, raw_score = $2, final_score = $3, score_percent = $4
@@ -527,7 +561,7 @@ router.post(
 
     res.json({
       success: true,
-      result: { scorePercent, rawScore: finalScore, totalQuestions: total, completedAt: done.submitted_at },
+      result: { scorePercent, rawScore: finalScore, totalQuestions: total, completedAt: done.submitted_at, pendingGrading: pendingManual },
     });
   })
 );
