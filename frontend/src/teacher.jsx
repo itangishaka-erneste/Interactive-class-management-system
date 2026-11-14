@@ -808,7 +808,7 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, teacherIm
             style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', borderRadius: 8, background: t.orangeSoft, color: t.orange, border: 'none', cursor: 'pointer' }}>
             <LogOut size={14} /><span style={{ fontSize: 12, fontWeight: 700 }}>Sign out</span>
           </button>
-        </div>}
+        </div>
       </div>
     </div>
   );
