@@ -2779,8 +2779,22 @@ function BooksPage({ books, state, reload, request, assignments, classes, toast,
 
         {tab === 'upload' ? (
           <Field label="Book file" hint={`PDF works best (the AI can read PDF, image and text files). Up to ${BOOK_MAX_MB} MB. Other file types are stored but the AI cannot read them.`}>
-            <input ref={fileInputRef} type="file" aria-label="Choose a book file" onChange={pickFile} />
-            {file && <p style={{ margin: '6px 0 0', fontSize: 11.5, color: t.subtext }}>{file.name} · {fmtBytes(file.size)}</p>}
+            <input ref={fileInputRef} type="file" aria-label="Choose a book file from your computer" onChange={pickFile} style={{ display: 'none' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" className="td-btn" onClick={() => fileInputRef.current?.click()}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 7, border: `1px solid ${t.border}`, borderRadius: 8, padding: '9px 13px', background: '#fff', color: t.text, fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>
+                <Upload size={14} /> {file ? 'Choose a different file' : 'Choose from my computer'}
+              </button>
+              {file && (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11.5, color: t.subtext }}>
+                  {file.name} · {fmtBytes(file.size)}
+                  <button type="button" onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ''; }}
+                    style={{ border: 0, padding: 0, background: 'none', color: t.blue, fontSize: 11.5, fontWeight: 700, cursor: 'pointer' }}>
+                    Remove
+                  </button>
+                </span>
+              )}
+            </div>
           </Field>
         ) : (
           <Field label="Link to the PDF" hint="Paste the direct link to a PDF on the REB, NESA or RTB website. If it does not work, download the PDF and upload it instead.">
