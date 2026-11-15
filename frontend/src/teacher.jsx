@@ -9,7 +9,8 @@ import {
   Save, FileText, AlertCircle, ListChecks, PenLine,
   CalendarClock, PlusCircle, Sparkles, Lock, RefreshCw, Check, BarChart3,
   Radio, Award, Search, ArrowUpDown,
-  Zap, Play, Trophy, Triangle, Hexagon, Square
+  Zap, Play, Trophy, Triangle, Hexagon, Square,
+  Library, Upload, Link2
 } from 'lucide-react';
 
 /* ============================================================================
@@ -94,7 +95,7 @@ const USER_SESSION_KEY = 'ecw_teacher_session';
 // depend on an in-memory note/quiz object that a fresh page load doesn't
 // have, so those fall back to their list view instead of a blank editor.
 const SECTION_STORAGE_KEY = 'ecw_teacher_section';
-const NAV_SECTIONS = ['notes', 'quizzes', 'students', 'results', 'marks', 'settings'];
+const NAV_SECTIONS = ['notes', 'quizzes', 'books', 'students', 'results', 'marks', 'settings'];
 function getStoredSection() {
   try {
     const s = localStorage.getItem(SECTION_STORAGE_KEY);
@@ -776,6 +777,7 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, teacherIm
         <NavSection label="Classroom">
           <NavItem icon={BookOpen} label="Notes" count={notesCount} active={active === 'notes'} onClick={() => go('notes')} />
           <NavItem icon={PenLine} label="Quizzes" count={quizzesCount} active={active === 'quizzes'} onClick={() => go('quizzes')} />
+          <NavItem icon={Library} label="Book library" active={active === 'books'} onClick={() => go('books')} />
         </NavSection>
         <NavSection label="Insights">
           <NavItem icon={Users} label="Students" active={active === 'students'} onClick={() => go('students')} />
@@ -1199,9 +1201,143 @@ function AiShell({ open, setOpen, title, subtitle, children }) {
 const LANGUAGE_OPTIONS = ['English', 'Kinyarwanda', 'French'];
 const DIFFICULTY_OPTIONS = ['Easy', 'Medium', 'Hard'];
 
-function AiNotePanel({ assignment, request, hasContent, onUse }) {
+/* ------------------------- BOOK SOURCE (for AI quiz / note) ------------------------- */
+// The AI never writes from a bare topic any more. The teacher either picks a
+// book from the library (plus the unit / pages to use) or pastes their own
+// material. These helpers are shared by the note panel and the quiz panel so
+// both follow exactly the same rules as the server (see resolveAiSource in
+// teacher.js).
+
+const emptySource = { mode: 'book', bookId: '', unit: '', topic: '', pageFrom: '', pageTo: '', sourceText: '' };
+
+const BOOK_TYPE_LABELS = { student: "Student's book", teacher: "Teacher's guide", syllabus: 'Syllabus', other: 'Other' };
+
+function fmtBytes(n) {
+  if (!n) return '';
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function sourceProblem(s) {
+  if (s.mode === 'book') {
+    if (!s.bookId) return 'Choose a book first. The AI writes only from a book or your own material.';
+    if (!s.unit.trim() && !s.topic.trim() && !s.pageFrom) return 'Tell the AI where in the book to look: a unit, a focus or a page range.';
+    if (s.pageFrom && s.pageTo && Number(s.pageTo) < Number(s.pageFrom)) return "'To page' cannot be smaller than 'From page'.";
+    return '';
+  }
+  if (s.sourceText.trim().length < 100) return 'Paste at least a few sentences of your own material.';
+  return '';
+}
+
+function sourceBody(s) {
+  if (s.mode === 'book') {
+    return {
+      bookId: Number(s.bookId),
+      unit: s.unit.trim(),
+      topic: s.topic.trim(),
+      pageFrom: s.pageFrom ? Number(s.pageFrom) : undefined,
+      pageTo: s.pageTo ? Number(s.pageTo) : undefined,
+    };
+  }
+  return { sourceText: s.sourceText.trim() };
+}
+
+function BookSourceFields({ books, assignment, value, onChange, goBooks }) {
+  const [fileError, setFileError] = useState('');
+  const set = (patch) => onChange({ ...value, ...patch });
+
+  const usable = books.filter((b) => b.aiReadable);
+  // Books for the chosen class + subject first, then the rest.
+  const matches = (b) => assignment && b.className.toLowerCase() === assignment.className.toLowerCase() && b.subject.toLowerCase() === assignment.subject.toLowerCase();
+  const sorted = [...usable].sort((a, b) => Number(matches(b)) - Number(matches(a)));
+  const chosen = usable.find((b) => String(b.id) === String(value.bookId));
+
+  // Pre-select a book that matches the chosen class and subject.
+  useEffect(() => {
+    if (value.mode !== 'book' || value.bookId) return;
+    const hit = usable.find(matches);
+    if (hit) set({ bookId: String(hit.id) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assignment && assignmentKey(assignment), books.length]);
+
+  const readFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 300000) { setFileError('That file is too large. Use a plain-text file under 300 KB, or paste the important part.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => { setFileError(''); set({ sourceText: String(reader.result || '').slice(0, 12000) }); };
+    reader.onerror = () => setFileError('That file could not be read.');
+    reader.readAsText(file);
+  };
+
+  const modeBtn = (mode, label) => (
+    <button type="button" onClick={() => set({ mode })} className="td-btn" aria-pressed={value.mode === mode}
+      style={{ border: 'none', borderRadius: 7, padding: '7px 12px', fontSize: 12, fontWeight: 700, cursor: 'pointer', background: value.mode === mode ? t.blue : '#fff', color: value.mode === mode ? '#fff' : t.text }}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {modeBtn('book', 'From a book')}
+        {modeBtn('text', 'From my own text')}
+      </div>
+
+      {value.mode === 'book' ? (
+        <>
+          {usable.length === 0 ? (
+            <Notice tone="orange" icon={Library} action={goBooks && <PrimaryButton variant="outline" onClick={goBooks}>Open Book library</PrimaryButton>}>
+              No book the AI can read has been added yet. Add a PDF to the Book library first.
+            </Notice>
+          ) : (
+            <Field label="Which book?" hint={chosen ? `${BOOK_TYPE_LABELS[chosen.bookType] || 'Book'}${chosen.className ? ` · ${chosen.className}` : ''}${chosen.subject ? ` · ${chosen.subject}` : ''}${chosen.sizeBytes ? ` · ${fmtBytes(chosen.sizeBytes)}` : ''}` : 'Books for the class and subject you picked are listed first.'}>
+              <select value={value.bookId} onChange={(e) => set({ bookId: e.target.value })} style={{ ...inputStyle, background: '#fff' }}>
+                <option value="">Choose a book…</option>
+                {sorted.map((b) => (
+                  <option key={b.id} value={b.id}>{`${matches(b) ? '★ ' : ''}${b.title}${b.className ? ` (${b.className}${b.subject ? ` · ${b.subject}` : ''})` : ''}`}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
+            <Field label="Unit or chapter" hint="e.g. Unit 3: Cell structure">
+              <input value={value.unit} onChange={(e) => set({ unit: e.target.value })} placeholder="Unit 3: ..." maxLength={200} style={{ ...inputStyle, background: '#fff' }} />
+            </Field>
+            <Field label="Focus inside it (optional)">
+              <input value={value.topic} onChange={(e) => set({ topic: e.target.value })} placeholder="e.g. Organelles" maxLength={300} style={{ ...inputStyle, background: '#fff' }} />
+            </Field>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10 }}>
+            <Field label="From page (optional)">
+              <input type="number" min={1} max={5000} value={value.pageFrom} onChange={(e) => set({ pageFrom: e.target.value })} style={{ ...inputStyle, background: '#fff' }} />
+            </Field>
+            <Field label="To page (optional)">
+              <input type="number" min={1} max={5000} value={value.pageTo} onChange={(e) => set({ pageTo: e.target.value })} style={{ ...inputStyle, background: '#fff' }} />
+            </Field>
+          </div>
+          <p style={{ margin: 0, fontSize: 11, color: t.faint, lineHeight: 1.5 }}>
+            Give a unit, a focus or pages (at least one). Page numbers are the ones shown in a PDF viewer, which can differ from the numbers printed on the page. Narrow ranges give better and cheaper results.
+          </p>
+        </>
+      ) : (
+        <Field label="Your material" hint="Paste text from your notes, or load a plain-text file. At least a few sentences, up to 12,000 characters.">
+          <textarea value={value.sourceText} onChange={(e) => set({ sourceText: e.target.value.slice(0, 12000) })} rows={6} placeholder="Paste lesson text here…" style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
+          <label style={{ display: 'inline-block', marginTop: 6, fontSize: 11.5, fontWeight: 700, color: t.blue, cursor: 'pointer' }}>
+            Load a .txt file
+            <input type="file" accept=".txt,.md,text/plain" onChange={readFile} style={{ display: 'none' }} />
+          </label>
+          {fileError && <p role="alert" style={{ margin: '4px 0 0', fontSize: 11.5, color: t.red }}>{fileError}</p>}
+        </Field>
+      )}
+    </div>
+  );
+}
+
+function AiNotePanel({ assignment, request, hasContent, onUse, books, goBooks }) {
   const [open, setOpen] = useState(false);
-  const [topic, setTopic] = useState('');
+  const [source, setSource] = useState(emptySource);
   const [language, setLanguage] = useState('English');
   const [instructions, setInstructions] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1210,14 +1346,15 @@ function AiNotePanel({ assignment, request, hasContent, onUse }) {
 
   const generate = async () => {
     if (!assignment) { setError('Pick a class and subject above first.'); return; }
-    if (!topic.trim()) { setError('Describe what the note should cover.'); return; }
+    const problem = sourceProblem(source);
+    if (problem) { setError(problem); return; }
     setError('');
     setBusy(true);
     try {
       const res = await request('/ai/note', {
         method: 'POST',
-        timeoutMs: 110000,
-        body: { classId: assignment.classId, subject: assignment.subject, topic: topic.trim(), language, instructions: instructions.trim() },
+        timeoutMs: 115000,
+        body: { classId: assignment.classId, subject: assignment.subject, language, instructions: instructions.trim(), ...sourceBody(source) },
       });
       setDraft(res.note);
     } catch (e) {
@@ -1228,10 +1365,8 @@ function AiNotePanel({ assignment, request, hasContent, onUse }) {
   };
 
   return (
-    <AiShell open={open} setOpen={setOpen} title="Draft this note with AI" subtitle="Describe the topic. You review the draft before it goes into your note.">
-      <Field label="What should the note cover?">
-        <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. Photosynthesis: light and dark reactions" style={{ ...inputStyle, background: '#fff' }} maxLength={300} />
-      </Field>
+    <AiShell open={open} setOpen={setOpen} title="Draft this note from a book with AI" subtitle="The AI writes only from the book you choose. You review the draft before it goes into your note.">
+      <BookSourceFields books={books} assignment={assignment} value={source} onChange={setSource} goBooks={goBooks} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
         <Field label="Language">
           <select value={language} onChange={(e) => setLanguage(e.target.value)} style={{ ...inputStyle, background: '#fff' }}>
@@ -1239,13 +1374,13 @@ function AiNotePanel({ assignment, request, hasContent, onUse }) {
           </select>
         </Field>
         <Field label="Extra wishes (optional)">
-          <input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="e.g. Include two worked examples" style={{ ...inputStyle, background: '#fff' }} maxLength={1000} />
+          <input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="e.g. Keep it short and simple" style={{ ...inputStyle, background: '#fff' }} maxLength={1000} />
         </Field>
       </div>
       {error && <Notice tone="red">{error}</Notice>}
       <div>
         <PrimaryButton variant="blue" icon={Sparkles} busy={busy} onClick={generate}>{draft ? 'Generate again' : 'Generate note'}</PrimaryButton>
-        {busy && <span style={{ marginLeft: 10, fontSize: 11.5, color: t.subtext }}>This can take up to a minute.</span>}
+        {busy && <span style={{ marginLeft: 10, fontSize: 11.5, color: t.subtext }}>Reading the book. This can take up to two minutes.</span>}
       </div>
 
       {draft && !busy && (
@@ -1262,7 +1397,7 @@ function AiNotePanel({ assignment, request, hasContent, onUse }) {
   );
 }
 
-function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuardRef, toast, goSettings }) {
+function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuardRef, toast, goSettings, books, goBooks }) {
   const isPublished = initial.status === 'published';
   const [title, setTitle] = useState(initial.title || '');
   const [unitTitle, setUnitTitle] = useState(initial.unitTitle || '');
@@ -1335,12 +1470,16 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
 
   const uploadMaterial = async () => {
     if (!uploadFile) return;
+    if (uploadFile.size > 25 * 1024 * 1024) {
+      setUploadError(`That file is ${fmtBytes(uploadFile.size)}. Files must be 25 MB or smaller.`);
+      return;
+    }
     setUploadError('');
     setUploading(true);
     try {
       const body = new FormData();
       body.append('file', uploadFile);
-      const res = await request('/notes/upload', { method: 'POST', body });
+      const res = await request('/notes/upload', { method: 'POST', body, timeoutMs: 180000 });
       setFileUrl(`${API_BASE}${res.fileUrl}`);
       setFileName(res.fileName);
       setFileType(res.fileType);
@@ -1403,12 +1542,12 @@ function NoteEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
           style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.6 }} />
       </div>
 
-      <AiNotePanel assignment={assignment} request={request} hasContent={!!content.trim()}
+      <AiNotePanel assignment={assignment} request={request} hasContent={!!content.trim()} books={books} goBooks={goBooks}
         onUse={(draft) => { setTitle(draft.title); setContent(draft.content); }} />
 
       <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18 }}>
         <p className="td-heading" style={{ margin: '0 0 6px', fontSize: 12.5, fontWeight: 700, color: t.text }}>Attach a file (optional)</p>
-        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Upload a PDF or book, or paste a public/shareable Google Drive, Docs, or other file link.</p>
+        <p style={{ margin: '0 0 10px', fontSize: 11.5, color: t.subtext }}>Upload any file (PDF, Word, PowerPoint, image, video…) up to 25 MB, or paste a public/shareable Google Drive, Docs, or other file link.</p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
           <input type="file" aria-label="Choose a file to attach" onChange={(e) => { setUploadFile(e.target.files?.[0] || null); setUploadError(''); }} />
           <PrimaryButton variant="blue" disabled={!uploadFile || !!busy || uploading} busy={uploading} onClick={uploadMaterial}>Upload study material</PrimaryButton>
@@ -1687,51 +1826,39 @@ const toEditorQuestion = (q) => ({
   options: q.options.map((o) => ({ id: uid(), optionText: o.optionText, isCorrect: !!o.isCorrect })),
 });
 
-function AiQuizPanel({ assignment, request, onUse, room }) {
+function AiQuizPanel({ assignment, request, onUse, room, books, goBooks }) {
   const [open, setOpen] = useState(false);
-  const [topic, setTopic] = useState('');
+  const [source, setSource] = useState(emptySource);
   const [count, setCount] = useState(5);
   const [difficulty, setDifficulty] = useState('Medium');
   const [language, setLanguage] = useState('English');
   const [instructions, setInstructions] = useState('');
-  const [sourceText, setSourceText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [draft, setDraft] = useState(null);
 
-  const readFile = (e) => {
-    const file = e.target.files && e.target.files[0];
-    e.target.value = '';
-    if (!file) return;
-    if (file.size > 300000) { setError('That file is too large. Use a plain-text file under 300 KB, or paste the important part.'); return; }
-    const reader = new FileReader();
-    reader.onload = () => { setError(''); setSourceText(String(reader.result || '').slice(0, 12000)); };
-    reader.onerror = () => setError('That file could not be read.');
-    reader.readAsText(file);
-  };
-
   const generate = async () => {
     if (!assignment) { setError('Pick a class and subject above first.'); return; }
-    if (!topic.trim()) { setError('Describe what the quiz should cover.'); return; }
+    const problem = sourceProblem(source);
+    if (problem) { setError(problem); return; }
     if (room <= 0) { setError('This quiz already has the maximum of 50 questions.'); return; }
     setError('');
     setBusy(true);
     try {
       const res = await request('/ai/quiz', {
         method: 'POST',
-        timeoutMs: 110000,
+        timeoutMs: 115000,
         body: {
           classId: assignment.classId,
           subject: assignment.subject,
-          topic: topic.trim(),
           count: Math.min(Number(count) || 5, room),
           difficulty,
           language,
           instructions: instructions.trim(),
-          sourceText: sourceText.trim(),
+          ...sourceBody(source),
         },
       });
-      setDraft({ ...res.quiz, requested: res.requested });
+      setDraft({ ...res.quiz, requested: res.requested, source: res.source });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -1740,10 +1867,8 @@ function AiQuizPanel({ assignment, request, onUse, room }) {
   };
 
   return (
-    <AiShell open={open} setOpen={setOpen} title="Generate questions with AI" subtitle="Each question gets four options and one correct answer. You review them before adding.">
-      <Field label="What should the quiz cover?">
-        <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. Newton's laws of motion" style={{ ...inputStyle, background: '#fff' }} maxLength={300} />
-      </Field>
+    <AiShell open={open} setOpen={setOpen} title="Generate questions from a book with AI" subtitle="Questions come only from the book you choose, with the unit or page each one is based on. You review them before adding.">
+      <BookSourceFields books={books} assignment={assignment} value={source} onChange={setSource} goBooks={goBooks} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 10 }}>
         <Field label="Questions (1 to 20)">
           <input type="number" min={1} max={20} value={count} onChange={(e) => setCount(e.target.value)} style={{ ...inputStyle, background: '#fff' }} />
@@ -1762,26 +1887,20 @@ function AiQuizPanel({ assignment, request, onUse, room }) {
       <Field label="Extra wishes (optional)">
         <input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="e.g. Include calculation questions" style={{ ...inputStyle, background: '#fff' }} maxLength={1000} />
       </Field>
-      <Field label="Base the questions on your own material (optional)" hint="Paste text from your notes, or load a plain-text file. Up to 12,000 characters.">
-        <textarea value={sourceText} onChange={(e) => setSourceText(e.target.value.slice(0, 12000))} rows={4} placeholder="Paste lesson text here…" style={{ ...inputStyle, background: '#fff', resize: 'vertical' }} />
-        <label style={{ display: 'inline-block', marginTop: 6, fontSize: 11.5, fontWeight: 700, color: t.blue, cursor: 'pointer' }}>
-          Load a .txt file
-          <input type="file" accept=".txt,.md,text/plain" onChange={readFile} style={{ display: 'none' }} />
-        </label>
-      </Field>
       {error && <Notice tone="red">{error}</Notice>}
       <div>
         <PrimaryButton variant="blue" icon={Sparkles} busy={busy} onClick={generate}>{draft ? 'Generate again' : 'Generate questions'}</PrimaryButton>
-        {busy && <span style={{ marginLeft: 10, fontSize: 11.5, color: t.subtext }}>This can take up to a minute.</span>}
+        {busy && <span style={{ marginLeft: 10, fontSize: 11.5, color: t.subtext }}>Reading the book. This can take up to two minutes.</span>}
       </div>
 
       {draft && !busy && (
         <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 8, padding: 14 }}>
           <p className="td-heading" style={{ margin: '0 0 4px', fontSize: 13.5, fontWeight: 700, color: t.text }}>{draft.title}</p>
+          {draft.source && <p style={{ margin: '0 0 6px', fontSize: 11.5, color: t.subtext }}>Based on: {draft.source.title}</p>}
           {draft.questions.length < draft.requested && (
-            <p style={{ margin: '0 0 8px', fontSize: 11.5, color: t.orange, fontWeight: 600 }}>The AI returned {draft.questions.length} of {draft.requested} questions. Generate again to get more.</p>
+            <p style={{ margin: '0 0 8px', fontSize: 11.5, color: t.orange, fontWeight: 600 }}>The AI returned {draft.questions.length} of {draft.requested} questions because that part of the book did not have enough material. Widen the pages or unit to get more.</p>
           )}
-          <div className="td-scroll" style={{ maxHeight: 260, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 6 }}>
+          <div className="td-scroll" style={{ maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 6 }}>
             {draft.questions.map((q, i) => (
               <div key={i} style={{ fontSize: 12.5 }}>
                 <p style={{ margin: 0, fontWeight: 700, color: t.text }}>{i + 1}. {q.question}</p>
@@ -1792,10 +1911,12 @@ function AiQuizPanel({ assignment, request, onUse, room }) {
                     </span>
                   ))}
                 </div>
+                {q.reference && <p style={{ margin: '4px 0 0', fontSize: 11, color: t.blue, fontWeight: 600 }}>Source: {q.reference}</p>}
               </div>
             ))}
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+          <p style={{ margin: '10px 0 0', fontSize: 11, color: t.faint }}>Check each question against the book before publishing.</p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
             <PrimaryButton icon={Check} onClick={() => { onUse(draft); setDraft(null); setOpen(false); }}>
               Add {draft.questions.length} question{draft.questions.length === 1 ? '' : 's'} to the quiz
             </PrimaryButton>
@@ -1807,7 +1928,7 @@ function AiQuizPanel({ assignment, request, onUse, room }) {
   );
 }
 
-function QuizEditor({ initial, assignments, request, onSaved, onClose, leaveGuardRef, toast, goSettings }) {
+function QuizEditor({ initial, assignments, request, onSaved, onClose, leaveGuardRef, toast, goSettings, books, goBooks }) {
   const isPublished = initial.status === 'published';
   const locked = (initial.attemptCount || 0) > 0;
 
@@ -1943,7 +2064,7 @@ function QuizEditor({ initial, assignments, request, onSaved, onClose, leaveGuar
         </div>
 
         {!locked && (
-          <AiQuizPanel assignment={assignment} request={request} room={50 - questions.length}
+          <AiQuizPanel assignment={assignment} request={request} room={50 - questions.length} books={books} goBooks={goBooks}
             onUse={(draft) => {
               setQuestions((qs) => [...qs, ...draft.questions.map(toEditorQuestion)].slice(0, 50));
               if (!title.trim()) setTitle(draft.title);
@@ -2534,6 +2655,223 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
   );
 }
 
+/* --------------------------------- BOOK LIBRARY -------------------------------- */
+// The school's shared library of REB / NESA textbooks (or any file). A book
+// added here can be picked in the AI quiz and note generators so questions
+// follow the book instead of a bare topic. Everyone in the school sees every
+// book; only the teacher who added a book can remove it.
+
+const BOOK_MAX_MB = 40;
+
+function BooksPage({ books, state, reload, request, assignments, classes, toast, onAdded, onRemoved }) {
+  const [tab, setTab] = useState('upload');
+  const [file, setFile] = useState(null);
+  const [url, setUrl] = useState('');
+  const [title, setTitle] = useState('');
+  const [className, setClassName] = useState('');
+  const [subject, setSubject] = useState('');
+  const [bookType, setBookType] = useState('student');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [typeFilter, setTypeFilter] = useState('All types');
+  const [visibleCount, setVisibleCount] = useState(6);
+  const [removing, setRemoving] = useState(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const subjectSuggestions = [...new Set(assignments.map((a) => a.subject))];
+
+  const reset = () => {
+    setFile(null);
+    setUrl('');
+    setTitle('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const pickFile = (e) => {
+    const f = e.target.files && e.target.files[0];
+    setError('');
+    if (!f) { setFile(null); return; }
+    if (f.size > BOOK_MAX_MB * 1024 * 1024) {
+      setFile(null);
+      e.target.value = '';
+      setError(`That file is ${fmtBytes(f.size)}. A book must be ${BOOK_MAX_MB} MB or smaller. Upload just the units you need as a smaller PDF.`);
+      return;
+    }
+    setFile(f);
+    if (!title.trim()) setTitle(f.name.replace(/\.[^.]+$/, ''));
+  };
+
+  const submit = async () => {
+    setError('');
+    if (tab === 'upload' && !file) { setError('Choose a file to upload.'); return; }
+    if (tab === 'link' && !url.trim()) { setError('Paste the link to the book PDF.'); return; }
+    setBusy(true);
+    try {
+      let res;
+      if (tab === 'upload') {
+        const body = new FormData();
+        body.append('file', file);
+        body.append('title', title.trim());
+        body.append('className', className.trim());
+        body.append('subject', subject.trim());
+        body.append('bookType', bookType);
+        res = await request('/books', { method: 'POST', body, timeoutMs: 180000 });
+      } else {
+        res = await request('/books/import', {
+          method: 'POST',
+          timeoutMs: 180000,
+          body: { url: url.trim(), title: title.trim(), className: className.trim(), subject: subject.trim(), bookType },
+        });
+      }
+      onAdded(res.book);
+      reset();
+      if (res.warning) toast(res.warning, 'error');
+      else toast('Book added to the library.');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setRemoveBusy(true);
+    try {
+      await request(`/books/${removing.id}`, { method: 'DELETE' });
+      onRemoved(removing.id);
+      toast('Book removed.');
+      setRemoving(null);
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      setRemoveBusy(false);
+    }
+  };
+
+  const typeOptions = ['All types', ...Object.values(BOOK_TYPE_LABELS)];
+  const q = query.trim().toLowerCase();
+  const filtered = books.filter((b) =>
+    (typeFilter === 'All types' || BOOK_TYPE_LABELS[b.bookType] === typeFilter) &&
+    (!q || `${b.title} ${b.className} ${b.subject} ${b.fileName}`.toLowerCase().includes(q))
+  );
+  useEffect(() => { setVisibleCount(6); }, [query, typeFilter, books.length]);
+
+  return (
+    <div className="td-page-pad" style={{ padding: 22, maxWidth: 900, display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div>
+        <p className="td-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text }}>Book library</p>
+        <p style={{ margin: '3px 0 0', fontSize: 13, color: t.subtext, lineHeight: 1.5 }}>
+          Add the REB / NESA textbooks you teach from. When you generate a quiz or a note with AI, you pick a book and a unit, and the AI writes only from that book.
+        </p>
+      </div>
+
+      <div style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+          {[['upload', 'Upload a file', Upload], ['link', 'Import from a link', Link2]].map(([key, label, Icon]) => (
+            <button key={key} type="button" onClick={() => { setTab(key); setError(''); }} className="td-btn" aria-pressed={tab === key}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, border: 'none', borderRadius: 8, padding: '8px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', background: tab === key ? t.green : t.panel, color: tab === key ? '#fff' : t.text }}>
+              <Icon size={14} /> {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'upload' ? (
+          <Field label="Book file" hint={`PDF works best (the AI can read PDF, image and text files). Up to ${BOOK_MAX_MB} MB. Other file types are stored but the AI cannot read them.`}>
+            <input ref={fileInputRef} type="file" aria-label="Choose a book file" onChange={pickFile} />
+            {file && <p style={{ margin: '6px 0 0', fontSize: 11.5, color: t.subtext }}>{file.name} · {fmtBytes(file.size)}</p>}
+          </Field>
+        ) : (
+          <Field label="Link to the PDF" hint="Paste the direct link to a PDF on the REB, NESA or RTB website. If it does not work, download the PDF and upload it instead.">
+            <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://elearning.reb.rw/…/book.pdf" aria-label="Link to the PDF" style={inputStyle} maxLength={2000} />
+          </Field>
+        )}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+          <Field label="Title">
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. Biology S2 Student's Book" maxLength={200} style={inputStyle} />
+          </Field>
+          <Field label="Class">
+            <input list="ecw-book-classes" value={className} onChange={(e) => setClassName(e.target.value)} placeholder="e.g. S2" maxLength={60} style={inputStyle} />
+            <datalist id="ecw-book-classes">{classes.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+          </Field>
+          <Field label="Subject">
+            <input list="ecw-book-subjects" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Biology" maxLength={80} style={inputStyle} />
+            <datalist id="ecw-book-subjects">{subjectSuggestions.map((s) => <option key={s} value={s} />)}</datalist>
+          </Field>
+          <Field label="Type">
+            <select value={bookType} onChange={(e) => setBookType(e.target.value)} style={inputStyle}>
+              {Object.entries(BOOK_TYPE_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+            </select>
+          </Field>
+        </div>
+
+        {error && <Notice tone="red">{error}</Notice>}
+        <div>
+          <PrimaryButton icon={tab === 'upload' ? Upload : Link2} busy={busy} onClick={submit}>{tab === 'upload' ? 'Add to library' : 'Import book'}</PrimaryButton>
+          {busy && <span style={{ marginLeft: 10, fontSize: 11.5, color: t.subtext }}>{tab === 'upload' ? 'Uploading…' : 'Downloading the book…'} Large books can take a minute.</span>}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: '1 1 220px' }}>
+          <Search size={14} color={t.faint} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search books" aria-label="Search books" style={{ ...inputStyle, paddingLeft: 30, background: '#fff' }} />
+        </div>
+        <Dropdown value={typeFilter} options={typeOptions} onChange={setTypeFilter} icon={Filter} />
+      </div>
+
+      {state.loading ? (
+        <CardsSkeleton count={2} />
+      ) : state.error ? (
+        <Notice tone="red" action={<PrimaryButton variant="outline" icon={RefreshCw} onClick={reload}>Try again</PrimaryButton>}>{state.error}</Notice>
+      ) : filtered.length === 0 ? (
+        <EmptyState icon={Library} title={books.length === 0 ? 'No books yet' : 'No matches'}
+          text={books.length === 0 ? 'Add your first textbook above. A PDF of one unit or a whole book both work.' : 'Try a different search or type.'} />
+      ) : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px,1fr))', gap: 12 }}>
+            {filtered.slice(0, visibleCount).map((b) => (
+              <div key={b.id} className="td-card td-fade" style={{ background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, padding: 15, borderLeft: `3px solid ${b.aiReadable ? t.green : t.orange}`, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <h4 className="td-heading" style={{ margin: 0, fontSize: 14, fontWeight: 700, color: t.text, wordBreak: 'break-word' }}>{b.title}</h4>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {b.className && <Chip tone="blue">{b.className}</Chip>}
+                  {b.subject && <Chip tone="green">{b.subject}</Chip>}
+                  <Chip tone="neutral">{BOOK_TYPE_LABELS[b.bookType] || 'Book'}</Chip>
+                  {!b.aiReadable && <Chip tone="orange">AI cannot read this type</Chip>}
+                </div>
+                <p style={{ margin: 0, fontSize: 11, color: t.subtext, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {b.fileName}{b.sizeBytes ? ` · ${fmtBytes(b.sizeBytes)}` : ''} · added by {b.mine ? 'you' : b.uploadedBy} · {fmtDate(b.createdAt)}
+                </p>
+                <div style={{ display: 'flex', gap: 7, marginTop: 2 }}>
+                  <a href={`${API_BASE}${b.fileUrl}`} target="_blank" rel="noreferrer" className="td-btn"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: t.panel, borderRadius: 8, padding: '7px 12px', fontSize: 12, fontWeight: 700, color: t.text, textDecoration: 'none' }}>
+                    <Eye size={13} /> Open
+                  </a>
+                  {b.mine && <IconBtn icon={Trash2} tone="orange" title="Remove from library" onClick={() => setRemoving(b)} size={30} />}
+                </div>
+              </div>
+            ))}
+          </div>
+          <ShowMoreButton remaining={filtered.length - visibleCount} onClick={() => setVisibleCount((n) => n + 6)} />
+        </>
+      )}
+
+      {removing && (
+        <ConfirmModal
+          title="Remove this book?"
+          text={`"${removing.title}" will be deleted from the library for everyone in your school. Quizzes and notes already made from it are not affected.`}
+          confirmLabel="Remove"
+          busy={removeBusy}
+          onCancel={() => setRemoving(null)}
+          onConfirm={remove}
+        />
+      )}
+    </div>
+  );
+}
+
 /* --------------------------------- SETTINGS ---------------------------------- */
 
 function SettingsPage({ me, assignments, classes, request, onChange, toast }) {
@@ -3103,6 +3441,8 @@ export default function Teacher({ onSignOut }) {
   const [classes, setClasses] = useState([]);
   const [notes, setNotes] = useState([]);
   const [quizzes, setQuizzes] = useState([]);
+  const [books, setBooks] = useState([]);
+  const [booksState, setBooksState] = useState({ loading: true, error: '' });
 
   const [section, setSection] = useState(getStoredSection);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -3225,6 +3565,21 @@ const load = useCallback(async () => {
 }, [request]);
 
   useEffect(() => { load(); }, [load]);
+
+  // The book library loads after the main workspace and never blocks it: a
+  // slow or failed book request only affects the Book library screen and the
+  // book picker inside the AI panels.
+  const loadBooks = useCallback(async () => {
+    setBooksState({ loading: true, error: '' });
+    try {
+      const res = await request('/books');
+      setBooks(res.books || []);
+      setBooksState({ loading: false, error: '' });
+    } catch (e) {
+      setBooksState({ loading: false, error: e.message });
+    }
+  }, [request]);
+  useEffect(() => { if (boot === 'ready') loadBooks(); }, [boot, loadBooks]);
 
   // Keep the reload-friendly section in sync whenever it lands on one of the
   // top-level tabs (never while an editor is open -- see the comment by
@@ -3478,8 +3833,9 @@ const load = useCallback(async () => {
     }
   };
 
-  const titles = { notes: 'Notes', noteEditor: 'Note editor', quizzes: 'Quizzes', quizEditor: 'Quiz builder', students: 'Students', results: 'Quiz results', marks: 'All marks', settings: 'Settings' };
+  const titles = { notes: 'Notes', noteEditor: 'Note editor', quizzes: 'Quizzes', quizEditor: 'Quiz builder', books: 'Book library', students: 'Students', results: 'Quiz results', marks: 'All marks', settings: 'Settings' };
   const goSettings = () => go('settings');
+  const goBooks = () => go('books');
 
   if (boot === 'loading') return <div className="td-root" style={{ minHeight: '100vh' }}><GlobalStyle /><PageSkeleton /></div>;
 
@@ -3531,7 +3887,7 @@ const load = useCallback(async () => {
             )}
             {section === 'noteEditor' && editingNote && (
               <NoteEditor key={editingNote.id || 'new-note'} initial={editingNote} assignments={assignments} request={request}
-                onSaved={upsertNote} onClose={closeNoteEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} />
+                onSaved={upsertNote} onClose={closeNoteEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} books={books} goBooks={goBooks} />
             )}
             {section === 'quizzes' && (
               <QuizzesDashboard quizzes={visibleQuizzes} filter={quizzesFilter} setFilter={setQuizzesFilter}
@@ -3542,7 +3898,11 @@ const load = useCallback(async () => {
             )}
             {section === 'quizEditor' && editingQuiz && (
               <QuizEditor key={editingQuiz.id || 'new-quiz'} initial={editingQuiz} assignments={assignments} request={request}
-                onSaved={upsertQuiz} onClose={closeQuizEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} />
+                onSaved={upsertQuiz} onClose={closeQuizEditor} leaveGuardRef={leaveGuardRef} toast={toast} goSettings={goSettings} books={books} goBooks={goBooks} />
+            )}
+            {section === 'books' && (
+              <BooksPage books={books} state={booksState} reload={loadBooks} request={request} assignments={assignments} classes={classes} toast={toast}
+                onAdded={(b) => setBooks((list) => [b, ...list])} onRemoved={(id) => setBooks((list) => list.filter((b) => b.id !== id))} />
             )}
             {section === 'students' && <StudentsPage request={request} classFilter={selectedClass} sessions={sessions} live={live} onViewSession={setViewingSession} />}
             {section === 'results' && <ResultsPage quizzes={quizzes} request={request} classFilter={selectedClass} subjectFilter={selectedSubject} onReview={openTeacherReview} />}
