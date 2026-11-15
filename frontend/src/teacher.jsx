@@ -796,19 +796,21 @@ function Sidebar({ section, go, notesCount, quizzesCount, teacherName, teacherIm
         <span style={{ minWidth: 0, flex: 1, fontSize: 11.5, fontWeight: 700, color: t.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{teacherName || 'Teacher'}</span>
         <ChevronDown size={14} color={t.subtext} style={{ transform: profileOpen ? 'rotate(180deg)' : 'none' }} />
       </button>
-      {profileOpen && <div className="td-fade" style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(100% + 7px)', padding: 10, background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, boxShadow: '0 8px 24px rgba(18,20,28,0.12)', zIndex: 70 }}>
+      {profileOpen && (
+        <div className="td-fade" style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(100% + 7px)', padding: 10, background: '#fff', border: `1px solid ${t.border}`, borderRadius: 10, boxShadow: '0 8px 24px rgba(18,20,28,0.12)', zIndex: 70 }}>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', padding: '2px 2px 10px' }}>
-          <label className="td-btn" style={{ fontSize: 11, color: t.blue, fontWeight: 700, cursor: 'pointer' }}>
-            {teacherImage ? 'Change picture' : 'Add picture'}
-            <input type="file" accept="image/*" onChange={onChangePhoto} aria-label="Add or change profile picture" style={{ display: 'none' }} />
-          </label>
-          {teacherImage && <button type="button" onClick={onRemovePhoto} style={{ padding: 0, border: 0, background: 'none', color: t.subtext, fontSize: 11, cursor: 'pointer' }}>Remove picture</button>}
+            <label className="td-btn" style={{ fontSize: 11, color: t.blue, fontWeight: 700, cursor: 'pointer' }}>
+              {teacherImage ? 'Change picture' : 'Add picture'}
+              <input type="file" accept="image/*" onChange={onChangePhoto} aria-label="Add or change profile picture" style={{ display: 'none' }} />
+            </label>
+            {teacherImage && <button type="button" onClick={onRemovePhoto} style={{ padding: 0, border: 0, background: 'none', color: t.subtext, fontSize: 11, cursor: 'pointer' }}>Remove picture</button>}
           </div>
           <button type="button" className="td-btn" onClick={onSignOut}
             style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 9, padding: '9px 10px', borderRadius: 8, background: t.orangeSoft, color: t.orange, border: 'none', cursor: 'pointer' }}>
             <LogOut size={14} /><span style={{ fontSize: 12, fontWeight: 700 }}>Sign out</span>
           </button>
         </div>
+      )}
       </div>
     </div>
   );
@@ -1635,22 +1637,24 @@ function QuestionEditor({ q, index, onChange, onRemove }) {
           </Field>
           <p style={{ margin: 0, color: t.subtext, fontSize: 11 }}>AI suggests a mark using this rubric. The teacher reviews and saves the final mark.</p>
         </div>
-      ) : <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
-        {q.options.map((o, oi) => (
-          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            <button type="button" onClick={() => markCorrect(o.id)} title="Mark as the correct answer" aria-label={`Mark option ${oi + 1} as correct`} aria-pressed={o.isCorrect}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', padding: 0 }}>
-              {o.isCorrect ? <CheckCircle2 size={18} color={t.green} /> : <Circle size={18} color={t.faint} />}
-            </button>
-            <input value={o.optionText} onChange={(e) => updateOption(o.id, { optionText: e.target.value })} placeholder={`Option ${oi + 1}`} aria-label={`Option ${oi + 1}`}
-              style={{ ...inputStyle, flex: 1, padding: 8, fontSize: 12, background: '#fff', width: 'auto' }} />
-            <IconBtn size={24} icon={X} onClick={() => removeOption(o.id)} title="Remove option" />
-          </div>
-        ))}
-        {q.options.length < 6 && (
-          <button type="button" onClick={addOption} className="td-btn" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: t.green, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 0', width: 'fit-content' }}><PlusCircle size={13} /> Add option</button>
-        )}
-      </div>}
+      ) : (
+        <div style={{ marginTop: 11, display: 'flex', flexDirection: 'column', gap: 7 }}>
+          {q.options.map((o, oi) => (
+            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <button type="button" onClick={() => markCorrect(o.id)} title="Mark as the correct answer" aria-label={`Mark option ${oi + 1} as correct`} aria-pressed={o.isCorrect}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', display: 'flex', padding: 0 }}>
+                {o.isCorrect ? <CheckCircle2 size={18} color={t.green} /> : <Circle size={18} color={t.faint} />}
+              </button>
+              <input value={o.optionText} onChange={(e) => updateOption(o.id, { optionText: e.target.value })} placeholder={`Option ${oi + 1}`} aria-label={`Option ${oi + 1}`}
+                style={{ ...inputStyle, flex: 1, padding: 8, fontSize: 12, background: '#fff', width: 'auto' }} />
+              <IconBtn size={24} icon={X} onClick={() => removeOption(o.id)} title="Remove option" />
+            </div>
+          ))}
+          {q.options.length < 6 && (
+            <button type="button" onClick={addOption} className="td-btn" style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', border: 'none', color: t.green, fontSize: 11.5, fontWeight: 700, cursor: 'pointer', padding: '3px 0', width: 'fit-content' }}><PlusCircle size={13} /> Add option</button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -2500,22 +2504,24 @@ function TeacherQuizReviewModal({ target, request, onClose }) {
                           {q.marksAwarded !== null && <Chip tone="green">Saved: {q.marksAwarded}/{q.marks}</Chip>}
                         </div>
                       </div>
-                    ) : <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                      {q.options.map((o) => {
-                        const isSelected = q.selectedOptionId === o.id;
-                        const isCorrect = o.isCorrect;
-                        let style = { borderColor: t.border, background: '#fff', color: t.text };
-                        if (isCorrect) style = { borderColor: t.green, background: t.greenSoft, color: t.green };
-                        else if (isSelected) style = { borderColor: t.red, background: t.redSoft, color: t.red };
-                        return (
-                          <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: `1px solid ${style.borderColor}`, background: style.background, color: style.color, borderRadius: 7, padding: '7px 10px', fontSize: 12 }}>
-                            <span style={{ flex: 1, fontWeight: 600 }}>{o.optionText}</span>
-                            {isCorrect && <CheckCircle2 size={13} />}
-                            {isSelected && !isCorrect && <X size={13} />}
-                          </div>}
-                        );
-                      })}
-                    </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        {q.options.map((o) => {
+                          const isSelected = q.selectedOptionId === o.id;
+                          const isCorrect = o.isCorrect;
+                          let style = { borderColor: t.border, background: '#fff', color: t.text };
+                          if (isCorrect) style = { borderColor: t.green, background: t.greenSoft, color: t.green };
+                          else if (isSelected) style = { borderColor: t.red, background: t.redSoft, color: t.red };
+                          return (
+                            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 8, border: `1px solid ${style.borderColor}`, background: style.background, color: style.color, borderRadius: 7, padding: '7px 10px', fontSize: 12 }}>
+                              <span style={{ flex: 1, fontWeight: 600 }}>{o.optionText}</span>
+                              {isCorrect && <CheckCircle2 size={13} />}
+                              {isSelected && !isCorrect && <X size={13} />}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                     {!q.selectedOptionId && <p style={{ margin: '8px 0 0', fontSize: 11, fontWeight: 700, color: t.orange }}>Did not answer this question.</p>}
                   </div>
                 );
